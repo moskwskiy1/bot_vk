@@ -1,0 +1,1620 @@
+#!/usr/bin/env python3
+import random, sqlite3, logging, time, re, json
+from datetime import datetime, timedelta, timezone
+
+from vk_api import VkApi
+from vk_api.bot_longpoll import VkBotLongPoll, VkBotEventType
+from vk_api.keyboard import VkKeyboard, VkKeyboardColor
+from vk_api.utils import get_random_id
+
+# ---------- КОНФИГ ----------
+VK_TOKEN = "vk1.a.wEVffgtJ5Szki-vnUgd_oPES5fId_uLZWo7-tDLy5sW5x-E52mZFzYxf3sC1RR6CWr6xue1FFYX0vJBr-saEW4Ym2W_gENt5WvwcqedTSDsccptFhzRpdWD1UC8brGpELjTdM5d7YLE1HNr0VUpqyZISY3Uy1NWp-wr4cooyTpLxYg5UOJiB2v5W3lJq_ZGlXve5zYzblSzeZO0ONA_tiQ"
+GROUP_ID = 238368566
+ADMIN_IDS_FILE = "admin_ids.txt"
+START_BALANCE = 50000.0
+VIP_PRICE = 100000
+VIP_DAYS = 30
+BITCOIN_PRICE = 25000
+RATING_PRICE = 10000
+EXP_PER_HOUR = 250
+
+DB_NAME = "casino_vk.db"
+CUSTOM_CMDS_FILE = "custom_cmds.json"
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Проверьте правильность этих ID!
+# Формат должен быть ТОЧНО таким: photo{owner_id}_{photo_id}
+CARS = {
+    "1": {"name": "Самокат", "price": 10000, "emoji": "🛴", "photo": "photo-238368566_457239019"},
+    "2": {"name": "Лада Веста", "price": 200000, "emoji": "🚗", "photo": "photo-238368566_457239017"},
+    "3": {"name": "Жигуль", "price": 100000000, "emoji": "🚙", "photo": "photo-238368566_457239018"}
+}
+
+# Система кейсов
+# Каждая награда: (сумма, вес, описание)
+# 70% шанс получить больше цены кейса
+CASES = {
+    "1": {
+        "name": "Обычный кейс",
+        "emoji": "🎁",
+        "price": 2_000_000,
+        "prizes": [
+            # ── ПРОИГРЫШ 30% ──
+            (300_000,   8, "💸 300 000$"),
+            (700_000,   8, "💸 700 000$"),
+            (1_200_000, 8, "💸 1 200 000$"),
+            (1_600_000, 6, "💸 1 600 000$"),
+            # ── ОКУП 70% ──
+            (2_100_000, 15, "✨ 2 100 000$"),
+            (2_500_000, 15, "✨ 2 500 000$"),
+            (3_000_000, 13, "💰 3 000 000$"),
+            (4_500_000, 12, "💰 4 500 000$"),
+            (6_000_000,  7, "🔥 6 000 000$"),
+            (10_000_000, 5, "🔥 10 000 000$"),
+            (20_000_000, 2, "🌟 ДЖЕКПОТ! 20 000 000$"),
+            (50_000_000, 1, "💎 МЕГА-ДЖЕКПОТ! 50 000 000$"),
+        ]
+    },
+    "2": {
+        "name": "Золотой кейс",
+        "emoji": "🏆",
+        "price": 15_000_000,
+        "prizes": [
+            # ── ПРОИГРЫШ 30% ──
+            (2_000_000,  7, "💸 2 000 000$"),
+            (5_000_000,  8, "💸 5 000 000$"),
+            (9_000_000,  8, "💸 9 000 000$"),
+            (13_000_000, 7, "💸 13 000 000$"),
+            # ── ОКУП 70% ──
+            (16_000_000, 14, "✨ 16 000 000$"),
+            (20_000_000, 14, "✨ 20 000 000$"),
+            (28_000_000, 13, "💰 28 000 000$"),
+            (40_000_000, 11, "💰 40 000 000$"),
+            (60_000_000,  8, "🔥 60 000 000$"),
+            (100_000_000, 5, "🔥 100 000 000$"),
+            (200_000_000, 3, "🌟 ДЖЕКПОТ! 200 000 000$"),
+            (500_000_000, 2, "💎 МЕГА-ДЖЕКПОТ! 500 000 000$"),
+        ]
+    },
+}
+
+def load_admin_ids():
+    ids = [1055127323]
+    try:
+        with open(ADMIN_IDS_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line.isdigit() and int(line) not in ids:
+                    ids.append(int(line))
+    except FileNotFoundError:
+        with open(ADMIN_IDS_FILE, 'w', encoding='utf-8') as f:
+            f.write("# Список ID администраторов\n")
+            f.write("1055127323\n")
+    return ids
+
+def load_custom_cmds():
+    try:
+        with open(CUSTOM_CMDS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_custom_cmds(cmds):
+    with open(CUSTOM_CMDS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(cmds, f, ensure_ascii=False, indent=2)
+
+def init_db():
+    with sqlite3.connect(DB_NAME) as c:
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY,
+            username TEXT,
+            screen_name TEXT,
+            balance REAL DEFAULT 50000.0,
+            is_blocked BOOLEAN DEFAULT 0,
+            registration_date TEXT DEFAULT CURRENT_TIMESTAMP,
+            games_played INTEGER DEFAULT 0,
+            last_bonus TEXT,
+            last_work TEXT,
+            last_mine TEXT,
+            last_rob TEXT,
+            last_exp TEXT,
+            bank REAL DEFAULT 0,
+            vip BOOLEAN DEFAULT 0,
+            vip_expires TEXT,
+            reputation INTEGER DEFAULT 0,
+            bcoins REAL DEFAULT 0,
+            bitcoins REAL DEFAULT 0,
+            experience INTEGER DEFAULT 0,
+            level INTEGER DEFAULT 1,
+            cars TEXT DEFAULT '[]',
+            duels_won INTEGER DEFAULT 0,
+            duels_lost INTEGER DEFAULT 0,
+            total_won REAL DEFAULT 0,
+            total_lost REAL DEFAULT 0,
+            total_sent REAL DEFAULT 0,
+            total_received REAL DEFAULT 0,
+            last_pay_date TEXT,
+            day_sent REAL DEFAULT 0,
+            warns INTEGER DEFAULT 0,
+            warn_reasons TEXT DEFAULT '[]'
+        );
+        """)
+        # Миграция для старых баз
+        for col, definition in [
+            ("last_pay_date", "TEXT"),
+            ("day_sent", "REAL DEFAULT 0"),
+            ("warns", "INTEGER DEFAULT 0"),
+            ("warn_reasons", "TEXT DEFAULT '[]'"),
+            ("muted_until", "TEXT"),
+            ("cases_inventory", "TEXT DEFAULT '{}'"),
+            ("married_to", "INTEGER DEFAULT NULL"),
+            ("married_at", "TEXT DEFAULT NULL"),
+            ("proposals_in", "TEXT DEFAULT '[]'"),
+        ]:
+            try:
+                c.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
+            except Exception:
+                pass
+        c.commit()
+
+def get_user(uid):
+    with sqlite3.connect(DB_NAME) as c:
+        c.row_factory = sqlite3.Row
+        return c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+
+def add_or_update_user(api, uid):
+    try:
+        info = api.users.get(user_ids=uid)
+        if info:
+            name = f"{info[0]['first_name']} {info[0]['last_name']}"
+        else:
+            name = f"id{uid}"
+    except:
+        name = f"id{uid}"
+    with sqlite3.connect(DB_NAME) as c:
+        c.execute("INSERT OR IGNORE INTO users(id, username) VALUES(?,?)", (uid, name))
+        c.commit()
+    return name
+
+def update_balance(uid, amount):
+    with sqlite3.connect(DB_NAME) as c:
+        c.execute("UPDATE users SET balance=balance+? WHERE id=?", (amount, uid))
+        c.commit()
+
+def update_bank(uid, amount):
+    with sqlite3.connect(DB_NAME) as c:
+        c.execute("UPDATE users SET bank=bank+? WHERE id=?", (amount, uid))
+        c.commit()
+
+def update_bcoins(uid, amount):
+    with sqlite3.connect(DB_NAME) as c:
+        c.execute("UPDATE users SET bcoins=bcoins+? WHERE id=?", (amount, uid))
+        c.commit()
+
+def update_bitcoins(uid, amount):
+    with sqlite3.connect(DB_NAME) as c:
+        c.execute("UPDATE users SET bitcoins=bitcoins+? WHERE id=?", (amount, uid))
+        c.commit()
+
+def update_reputation(uid, amount):
+    with sqlite3.connect(DB_NAME) as c:
+        c.execute("UPDATE users SET reputation=reputation+? WHERE id=?", (amount, uid))
+        c.commit()
+
+def update_experience(uid, amount):
+    with sqlite3.connect(DB_NAME) as c:
+        c.execute("UPDATE users SET experience=experience+? WHERE id=?", (amount, uid))
+        user = get_user(uid)
+        if user:
+            new_level = 1 + ((user['experience'] or 0) // 1000)
+            if new_level > (user['level'] or 1):
+                c.execute("UPDATE users SET level=? WHERE id=?", (new_level, uid))
+        c.commit()
+
+def send(api, uid, text, peer_id=None, attachment=None, keyboard=None):
+    target = peer_id if peer_id and peer_id != uid else uid
+    params = {
+        'peer_id': target,
+        'message': text,
+        'random_id': get_random_id()
+    }
+    if keyboard:
+        params['keyboard'] = keyboard.get_keyboard()
+    if attachment:
+        try:
+            api.messages.send(**{**params, 'attachment': attachment})
+            return
+        except Exception as e:
+            logger.error(f"Ошибка отправки с фото: {e} — отправляю без фото")
+    try:
+        api.messages.send(**params)
+    except Exception as e:
+        logger.error(f"Ошибка отправки: {e}")
+
+def extract_id(raw_str):
+    if not raw_str: return None
+    match = re.search(r'\[id(\d+)\|', raw_str)
+    if match: return int(match.group(1))
+    nums = re.findall(r'^\d+$', raw_str.strip())
+    if nums: return int(nums[0])
+    return None
+
+def resolve_user_id(api, raw_str):
+    if not raw_str: return None
+    # Упоминание вида [id123|Имя]
+    match = re.search(r'\[id(\d+)\|', raw_str)
+    if match: return int(match.group(1))
+    # Чистый числовой ID
+    if raw_str.strip().lstrip('-').isdigit():
+        return int(raw_str.strip())
+    # @username или просто username
+    screen_name = raw_str.strip().lstrip('@')
+    try:
+        info = api.users.get(user_ids=screen_name)
+        if info:
+            return info[0]['id']
+    except Exception as e:
+        logger.error(f"Ошибка resolve_user_id({screen_name}): {e}")
+    return None
+
+def get_vk_link(api, uid):
+    try:
+        info = api.users.get(user_ids=uid, fields="screen_name")
+        if info:
+            name = f"{info[0]['first_name']} {info[0]['last_name']}"
+            screen = info[0].get('screen_name') or f"id{uid}"
+            return name, f"vk.com/{screen}"
+    except Exception:
+        pass
+    return f"id{uid}", f"vk.com/id{uid}"
+
+def fmt_big(amount):
+    if amount is None: return "0"
+    if amount >= 1000000:
+        return f"{amount/1000000:.1f}M"
+    elif amount >= 1000:
+        return f"{int(amount)}" if amount == int(amount) else f"{amount:.2f}"
+    return f"{int(amount)}" if amount == int(amount) else f"{amount:.2f}".rstrip('0').rstrip('.')
+
+def fmt_time(td):
+    total_seconds = int(td.total_seconds())
+    if total_seconds < 60:
+        return f"{total_seconds} сек"
+    elif total_seconds < 3600:
+        minutes = total_seconds // 60
+        seconds = total_seconds % 60
+        return f"{minutes} мин {seconds} сек"
+    else:
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        return f"{hours} ч {minutes} мин"
+
+def can_get_bonus(uid):
+    user = get_user(uid)
+    if not user or not user['last_bonus']:
+        return True, None
+    last = datetime.strptime(user['last_bonus'], "%Y-%m-%d %H:%M:%S")
+    delta = timedelta(hours=3)
+    if datetime.now() - last >= delta:
+        return True, None
+    else:
+        next_time = last + delta
+        remaining = next_time - datetime.now()
+        return False, remaining
+
+def set_bonus_time(uid):
+    with sqlite3.connect(DB_NAME) as c:
+        c.execute("UPDATE users SET last_bonus=? WHERE id=?", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), uid))
+        c.commit()
+
+def get_user_cars(uid):
+    user = get_user(uid)
+    if user and user['cars']:
+        try:
+            return json.loads(user['cars'])
+        except:
+            return []
+    return []
+
+def add_car(uid, car_name):
+    cars = get_user_cars(uid)
+    if car_name not in cars:
+        cars.append(car_name)
+        with sqlite3.connect(DB_NAME) as c:
+            c.execute("UPDATE users SET cars=? WHERE id=?", (json.dumps(cars), uid))
+            c.commit()
+        return True
+    return False
+
+def get_user_profile(api, uid):
+    user = get_user(uid)
+    if not user:
+        add_or_update_user(api, uid)
+        user = get_user(uid)
+    
+    exp = user['experience'] or 0
+    level = 1 + (exp // 1000)
+    next_exp = level * 1000
+    status = "👑 ПРЕМИУМ" if user['vip'] else "⭐ ОБЫЧНЫЙ"
+    
+    profile = (
+        f"🎫 ID: {uid}\n"
+        f"🏆 Статус: {status}\n"
+        f"💰 Денег: {fmt_big(user['balance'])}$\n"
+        f"🏛 В банке: {fmt_big(user['bank'])}$\n"
+        f"💳 B-Coins: {fmt_big(user['bcoins'] or 0)}\n"
+        f"📀 Биткоины: {fmt_big(user['bitcoins'] or 0)}\n"
+        f"👑 Рейтинг: {user['reputation'] or 0}\n"
+        f"🌟 Опыт: {exp}/{next_exp} (Уровень {level})\n"
+        f"🎲 Всего сыграно игр: {user['games_played'] or 0}\n"
+        f"📅 Дата регистрации: {user['registration_date']}\n"
+    )
+    return profile
+
+def check_exp_gain(uid):
+    user = get_user(uid)
+    if not user: return
+    last_exp = user['last_exp']
+    now = datetime.now()
+    if last_exp:
+        try:
+            last = datetime.strptime(last_exp, "%Y-%m-%d %H:%M:%S")
+            hours_passed = int((now - last).total_seconds() // 3600)
+            if hours_passed >= 1:
+                exp_gain = hours_passed * EXP_PER_HOUR
+                update_experience(uid, exp_gain)
+                with sqlite3.connect(DB_NAME) as c:
+                    c.execute("UPDATE users SET last_exp=? WHERE id=?", (now.strftime("%Y-%m-%d %H:%M:%S"), uid))
+                    c.commit()
+        except:
+            pass
+    else:
+        with sqlite3.connect(DB_NAME) as c:
+            c.execute("UPDATE users SET last_exp=? WHERE id=?", (now.strftime("%Y-%m-%d %H:%M:%S"), uid))
+            c.commit()
+
+def handle_message(api, event):
+    msg = event.object.get('message', {})
+    uid = msg.get('from_id')
+    if not uid: return
+    text = msg.get('text', '').strip()
+    if not text: return
+    peer_id = msg.get('peer_id')
+    
+    chat_id = None
+    if peer_id and peer_id > 2000000000:
+        chat_id = peer_id - 2000000000
+
+    has_payload = bool(msg.get('payload'))
+    if peer_id and peer_id != uid and not text.startswith('/') and not has_payload:
+        return
+
+    user = get_user(uid)
+    if not user:
+        add_or_update_user(api, uid)
+        send(api, uid, f"🎰 Добро пожаловать! Баланс: {fmt_big(START_BALANCE)}$\n\n📋 Команды:\n/меню - профиль\n/бонус - получить бонус\n/машины - купить машину", peer_id)
+        user = get_user(uid)
+    
+    # Тихий бан — бот полностью игнорирует
+    if user and user['is_blocked']:
+        return
+
+    if user:
+        check_exp_gain(uid)
+        user = get_user(uid)
+
+    # Проверка мута
+    if user and user['muted_until']:
+        try:
+            muted_until = datetime.strptime(user['muted_until'], "%Y-%m-%d %H:%M:%S")
+            if datetime.now() < muted_until:
+                remaining = muted_until - datetime.now()
+                send(api, uid, f"🔇 Вы в муте. Осталось: {fmt_time(remaining)}", peer_id)
+                return
+            else:
+                with sqlite3.connect(DB_NAME) as c:
+                    c.execute("UPDATE users SET muted_until=NULL WHERE id=?", (uid,))
+                    c.commit()
+        except Exception:
+            pass
+
+    parts = text.split()
+    cmd = parts[0].lower().lstrip('/')
+    ADMIN_IDS = load_admin_ids()
+
+    # Применяем кастомные алиасы
+    custom_cmds = load_custom_cmds()
+    if cmd in custom_cmds:
+        cmd = custom_cmds[cmd]
+
+    # ========== МЕНЮ (ПРОФИЛЬ) ==========
+    if cmd == "меню" or cmd == "профиль":
+        profile = get_user_profile(api, uid)
+        
+        keyboard = VkKeyboard(inline=True)
+        keyboard.add_callback_button("🚗 Имущество", color=VkKeyboardColor.PRIMARY, payload={"cmd": "property"})
+        
+        send(api, uid, profile, peer_id)
+        send(api, uid, "🔽 Нажмите на кнопку, чтобы посмотреть имущество:", peer_id, keyboard=keyboard)
+        return
+
+    # ========== ОБРАБОТКА КНОПОК (ПЕЙЛОАДОВ) ==========
+    payload = msg.get('payload')
+    if payload:
+        try:
+            data = json.loads(payload)
+            if data.get('cmd') == 'property':
+                cars = get_user_cars(uid)
+                if not cars:
+                    send(api, uid, "🏠 ВАШЕ ИМУЩЕСТВО 🏠\n\nУ вас пока нет машин.\nКупить можно через /машины", peer_id)
+                    return
+                
+                keyboard = VkKeyboard(inline=True)
+                keyboard.add_callback_button("🚗 Мои машины", color=VkKeyboardColor.PRIMARY, payload={"cmd": "show_cars"})
+                send(api, uid, f"🏠 ВАШЕ ИМУЩЕСТВО 🏠\n\n🚗 Автомобилей: {len(cars)} шт.", peer_id, keyboard=keyboard)
+                return
+                
+            elif data.get('cmd') == 'show_cars':
+                cars = get_user_cars(uid)
+                if not cars:
+                    send(api, uid, "🚗 У вас нет машин.", peer_id)
+                    return
+                
+                # Отправляем фото для КАЖДОЙ машины отдельным сообщением
+                send(api, uid, "🚗 ВАШИ АВТОМОБИЛИ 🚗\n", peer_id)
+                
+                for car_name in cars:
+                    car_info = None
+                    for key, car in CARS.items():
+                        if car['name'].lower() == car_name.lower():
+                            car_info = car
+                            break
+                    
+                    if car_info:
+                        message_text = f"{car_info['emoji']} {car_name}\n💰 Стоимость: {fmt_big(car_info['price'])}$"
+                        send(api, uid, message_text, peer_id, attachment=car_info['photo'])
+                    else:
+                        send(api, uid, f"🚗 {car_name}", peer_id)
+                return
+        except Exception as e:
+            logger.error(f"Ошибка payload: {e}")
+
+    # ========== МАШИНЫ (СПИСОК ДОСТУПНЫХ) ==========
+    if cmd == "машины":
+        cars_text = "🚗 ДОСТУПНЫЕ МАШИНЫ 🚗\n\n"
+        for key, car in CARS.items():
+            cars_text += f"{key}. {car['emoji']} {car['name']} — {fmt_big(car['price'])}$\n"
+        cars_text += f"\nЧтобы купить машину, введите: /buycar [номер]\nПример: /buycar 1"
+        send(api, uid, cars_text, peer_id)
+        return
+
+    # ========== BUYCAR (ПОКУПКА МАШИНЫ) ==========
+    if cmd == "buycar" and len(parts) >= 2:
+        car_num = parts[1]
+        
+        if car_num not in CARS:
+            send(api, uid, "❌ Неверный номер. Доступны: 1, 2, 3", peer_id)
+            return
+        
+        car = CARS[car_num]
+        car_name = car['name']
+        car_price = car['price']
+        
+        if user['balance'] < car_price:
+            send(api, uid, f"❌ Недостаточно денег для покупки {car['emoji']} {car_name}. Нужно {fmt_big(car_price)}$", peer_id)
+            return
+        
+        cars_list = get_user_cars(uid)
+        if car_name in cars_list:
+            send(api, uid, f"❌ У вас уже есть {car['emoji']} {car_name}", peer_id)
+            return
+        
+        update_balance(uid, -car_price)
+        add_car(uid, car_name)
+        
+        # Отправляем фото купленной машины
+        send(api, uid, f"✅ Вы купили {car['emoji']} {car_name} за {fmt_big(car_price)}$!", peer_id, attachment=car['photo'])
+        return
+
+    # ========== БОНУС ==========
+    if cmd == "бонус":
+        ok, remaining = can_get_bonus(uid)
+        if not ok:
+            send(api, uid, f"🎁 БОНУС БУДЕТ ДОСТУПЕН ЧЕРЕЗ: {fmt_time(remaining)}\n\nЗаходи позже!", peer_id)
+            return
+        
+        bonus = random.randint(50000, 100000)
+        update_balance(uid, bonus)
+        set_bonus_time(uid)
+        update_experience(uid, 25)
+        
+        send(api, uid, f"🎁✨ ВЫ ПОЛУЧИЛИ БОНУС! ✨🎁\n\n💰 +{fmt_big(bonus)}$\n🌟 +25 опыта\n\nВозвращайся за новым бонусом через 3 часа!", peer_id)
+        return
+
+    # ========== БАНК ==========
+    if cmd == "банк" and len(parts) >= 2:
+        action = parts[1].lower()
+        if action == "положить" and len(parts) >= 3:
+            try:
+                amount = float(parts[2].replace(',', '.'))
+                if amount <= 0:
+                    send(api, uid, "❌ Сумма должна быть больше 0", peer_id)
+                    return
+                if user['balance'] < amount:
+                    send(api, uid, "❌ Недостаточно средств", peer_id)
+                    return
+                update_balance(uid, -amount)
+                update_bank(uid, amount)
+                send(api, uid, f"🏦 Вы положили {fmt_big(amount)}$ в банк", peer_id)
+            except:
+                send(api, uid, "❌ Формат: /банк положить [сумма]", peer_id)
+            return
+        elif action == "снять" and len(parts) >= 3:
+            try:
+                amount = float(parts[2].replace(',', '.'))
+                if amount <= 0:
+                    send(api, uid, "❌ Сумма должна быть больше 0", peer_id)
+                    return
+                if user['bank'] < amount:
+                    send(api, uid, "❌ Недостаточно в банке", peer_id)
+                    return
+                update_balance(uid, amount)
+                update_bank(uid, -amount)
+                send(api, uid, f"🏦 Вы сняли {fmt_big(amount)}$ из банка", peer_id)
+            except:
+                send(api, uid, "❌ Формат: /банк снять [сумма]", peer_id)
+            return
+        else:
+            send(api, uid, f"🏦 В банке: {fmt_big(user['bank'])}$\n\n/банк положить [сумма]\n/банк снять [сумма]", peer_id)
+        return
+
+    # ========== МАГАЗИН ==========
+    if cmd in ["shop", "магазин"]:
+        shop_text = (
+            "🛒 МАГАЗИН 🛒\n\n"
+            "1️⃣ B-Coins — 1000$ за 1 B-Coin\n"
+            "2️⃣ Биткоин — 25000$ за 1 BTC\n"
+            "3️⃣ Рейтинг — 10000$ за 1 рейтинг\n"
+            "4️⃣ VIP статус — 100000$ на 30 дней\n\n"
+            "📝 Для покупки: /buy [товар] [количество]\n"
+            "Товары: bcoin, bitcoin, rating, vip"
+        )
+        send(api, uid, shop_text, peer_id)
+        return
+
+    # ========== ПОКУПКА (МАГАЗИН) ==========
+    if cmd == "buy" and len(parts) >= 2:
+        item = parts[1].lower()
+        amount = 1
+        if len(parts) >= 3:
+            try:
+                amount = int(parts[2])
+                if amount <= 0:
+                    send(api, uid, "❌ Количество должно быть больше 0", peer_id)
+                    return
+            except:
+                send(api, uid, "❌ Укажите количество числом", peer_id)
+                return
+        
+        if item == "bcoin":
+            cost = 1000 * amount
+            if user['balance'] >= cost:
+                update_balance(uid, -cost)
+                update_bcoins(uid, amount)
+                send(api, uid, f"✅ Куплено {amount} B-Coins за {fmt_big(cost)}$", peer_id)
+            else:
+                send(api, uid, f"❌ Недостаточно средств. Нужно {fmt_big(cost)}$", peer_id)
+        elif item in ["bitcoin", "btc"]:
+            cost = BITCOIN_PRICE * amount
+            if user['balance'] >= cost:
+                update_balance(uid, -cost)
+                update_bitcoins(uid, amount)
+                send(api, uid, f"✅ Куплено {amount} BTC за {fmt_big(cost)}$", peer_id)
+            else:
+                send(api, uid, f"❌ Недостаточно средств. Нужно {fmt_big(cost)}$", peer_id)
+        elif item in ["rating", "rep"]:
+            cost = RATING_PRICE * amount
+            if user['balance'] >= cost:
+                update_balance(uid, -cost)
+                update_reputation(uid, amount)
+                send(api, uid, f"✅ Куплено {amount} рейтинга за {fmt_big(cost)}$", peer_id)
+            else:
+                send(api, uid, f"❌ Недостаточно средств. Нужно {fmt_big(cost)}$", peer_id)
+        elif item == "vip":
+            if user['vip']:
+                send(api, uid, "❌ У вас уже есть VIP статус", peer_id)
+                return
+            if user['balance'] >= VIP_PRICE:
+                update_balance(uid, -VIP_PRICE)
+                expires = datetime.now() + timedelta(days=VIP_DAYS)
+                with sqlite3.connect(DB_NAME) as c:
+                    c.execute("UPDATE users SET vip=1, vip_expires=? WHERE id=?", (expires.strftime("%Y-%m-%d %H:%M:%S"), uid))
+                    c.commit()
+                send(api, uid, f"✅ VIP статус куплен на 30 дней за {fmt_big(VIP_PRICE)}$", peer_id)
+            else:
+                send(api, uid, f"❌ Недостаточно средств. Нужно {fmt_big(VIP_PRICE)}$", peer_id)
+        else:
+            send(api, uid, "❌ Товар не найден. Доступно: bcoin, bitcoin, rating, vip", peer_id)
+        return
+
+    # ========== КАЗИНО ==========
+    if cmd == "казино" and len(parts) >= 2:
+        try:
+            bet = float(parts[1].replace(',', '.'))
+            if bet <= 0:
+                send(api, uid, "❌ Ставка должна быть больше 0", peer_id)
+                return
+            if user['balance'] < bet:
+                send(api, uid, f"❌ Недостаточно средств. Нужно {fmt_big(bet)}$", peer_id)
+                return
+            symbols = ["🍒", "🍋", "🍊", "🍇", "🔔", "⭐", "7"]
+            res = [random.choice(symbols) for _ in range(3)]
+            if res[0] == res[1] == res[2]:
+                win = bet * 5
+            elif len(set(res)) == 2:
+                win = bet * 2
+            else:
+                win = 0
+            net = win - bet
+            update_balance(uid, net)
+            with sqlite3.connect(DB_NAME) as c:
+                c.execute("UPDATE users SET games_played=games_played+1 WHERE id=?", (uid,))
+                c.commit()
+            update_experience(uid, 10)
+            result_text = "ВЫИГРЫШ 🎉" if win > 0 else "ПРОИГРЫШ 💔"
+            msg_text = f"🎰 {res[0]} | {res[1]} | {res[2]}\n💵 Ставка: {fmt_big(bet)}$\n💰 Выигрыш: {fmt_big(win)}$\n📈 Итог: {'+' if net>=0 else ''}{fmt_big(net)}$\n{result_text}"
+            send(api, uid, msg_text, peer_id)
+        except:
+            send(api, uid, "❌ Укажите ставку числом. Пример: /казино 100", peer_id)
+        return
+
+    # ========== КИК (АДМИН) ==========
+    if cmd in ["кик", "kick"]:
+        if not chat_id:
+            send(api, uid, "❌ Команда /кик работает только в беседах.", peer_id)
+            return
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ У вас нет прав.", peer_id)
+            return
+        target_id = None
+        reason = None
+        reply_msg = msg.get('reply_message')
+        if reply_msg:
+            target_id = reply_msg['from_id']
+            reason = ' '.join(parts[1:]) if len(parts) > 1 else None
+        if not target_id and len(parts) > 1:
+            target_id = resolve_user_id(api, parts[1])
+            reason = ' '.join(parts[2:]) if len(parts) > 2 else None
+        if not target_id:
+            send(api, uid, "❓ Ответьте на сообщение пользователя или укажите ID/юзернейм\nПример: /кик @durov спам", peer_id)
+            return
+        if target_id == uid:
+            send(api, uid, "😂 Нельзя кикнуть себя.", peer_id)
+            return
+        try:
+            api.messages.removeChatUser(chat_id=chat_id, member_id=target_id)
+            admin_name, admin_link = get_vk_link(api, uid)
+            target_name, target_link = get_vk_link(api, target_id)
+            msg_text = (
+                f"🚫 КИК\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"👮 Модератор: {admin_name} ({admin_link})\n"
+                f"👤 Нарушитель: {target_name} ({target_link})\n"
+                f"📋 Причина: {reason if reason else 'Не указана'}\n"
+                f"━━━━━━━━━━━━━━━"
+            )
+            send(api, uid, msg_text, peer_id)
+        except Exception as e:
+            if "9" in str(e):
+                send(api, uid, "❌ У бота нет прав администратора в этой беседе.", peer_id)
+            elif "15" in str(e):
+                send(api, uid, "❌ Нельзя кикнуть администратора беседы.", peer_id)
+            else:
+                send(api, uid, f"❌ Ошибка", peer_id)
+        return
+
+    # ========== ВЫДАЧА ДЕНЕГ (АДМИН) ==========
+    if cmd == "givemoney" and len(parts) >= 3:
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ У вас нет прав.", peer_id)
+            return
+        try:
+            target = resolve_user_id(api, parts[1])
+            amount = float(parts[2].replace(',', '.'))
+        except:
+            send(api, uid, "❌ Формат: /givemoney [id или @юзернейм] [сумма]", peer_id)
+            return
+        if not target:
+            send(api, uid, "❌ Пользователь не найден. Укажите ID или @юзернейм.", peer_id)
+            return
+        if amount <= 0:
+            send(api, uid, "❌ Сумма должна быть больше 0", peer_id)
+            return
+        target_user = get_user(target)
+        if not target_user:
+            add_or_update_user(api, target)
+            target_user = get_user(target)
+        if not target_user:
+            send(api, uid, "❌ Пользователь не найден.", peer_id)
+            return
+        update_balance(target, amount)
+        target_name, _ = get_vk_link(api, target)
+        send(api, uid, f"✅ Выдали {fmt_big(amount)}$ пользователю {target_name}", peer_id)
+        return
+
+    # ========== ТОП БОГАЧЕЙ ==========
+    if cmd == "топ" or cmd == "top":
+        with sqlite3.connect(DB_NAME) as c:
+            c.row_factory = sqlite3.Row
+            top = c.execute("SELECT username, balance FROM users ORDER BY balance DESC LIMIT 10").fetchall()
+        if not top:
+            send(api, uid, "📊 Топ богачей пока пуст", peer_id)
+            return
+        msg = "💰 ТОП-10 БОГАЧЕЙ 💰\n\n"
+        for i, u in enumerate(top, 1):
+            msg += f"{i}. {u['username']} — {fmt_big(u['balance'])}$\n"
+        send(api, uid, msg, peer_id)
+        return
+
+    # ========== ПЕРЕВОД (/pay) ==========
+    if cmd == "pay" and len(parts) >= 3:
+        try:
+            target_id = resolve_user_id(api, parts[1])
+            amount = float(parts[2].replace(',', '.').replace(' ', ''))
+        except:
+            send(api, uid, "❌ Формат: /pay [id] [сумма]\nПример: /pay 123456 5000", peer_id)
+            return
+
+        if not target_id:
+            send(api, uid, "❌ Укажите ID получателя.\nПример: /pay 123456 5000", peer_id)
+            return
+        if target_id == uid:
+            send(api, uid, "❌ Нельзя переводить самому себе.", peer_id)
+            return
+        if amount <= 0:
+            send(api, uid, "❌ Сумма должна быть больше 0.", peer_id)
+            return
+
+        DAY_LIMIT = 250_000_000
+        MSK = timezone(timedelta(hours=3))
+        msk_today = datetime.now(MSK).strftime("%Y-%m-%d")
+
+        sender = get_user(uid)
+        if not sender:
+            send(api, uid, "❌ Вы не зарегистрированы.", peer_id)
+            return
+
+        # Сброс дневного лимита если новый день по МСК
+        last_pay_date = sender['last_pay_date'] if sender['last_pay_date'] else ""
+        day_sent = sender['day_sent'] if sender['day_sent'] else 0.0
+        if last_pay_date != msk_today:
+            day_sent = 0.0
+
+        if sender['balance'] < amount:
+            send(api, uid, f"❌ Недостаточно средств. У вас {fmt_big(sender['balance'])}$", peer_id)
+            return
+
+        remaining_limit = DAY_LIMIT - day_sent
+        if amount > remaining_limit:
+            send(api, uid, f"❌ Превышен дневной лимит переводов!\n💸 Остаток лимита сегодня: {fmt_big(remaining_limit)}$\n🔄 Лимит сбрасывается в 00:00 по МСК", peer_id)
+            return
+
+        target_user = get_user(target_id)
+        if not target_user:
+            add_or_update_user(api, target_id)
+            target_user = get_user(target_id)
+
+        # Выполняем перевод
+        update_balance(uid, -amount)
+        update_balance(target_id, amount)
+        with sqlite3.connect(DB_NAME) as c:
+            c.execute("UPDATE users SET total_sent=total_sent+?, last_pay_date=?, day_sent=? WHERE id=?",
+                      (amount, msk_today, day_sent + amount, uid))
+            c.execute("UPDATE users SET total_received=total_received+? WHERE id=?", (amount, target_id))
+            c.commit()
+
+        new_limit_left = DAY_LIMIT - (day_sent + amount)
+        send(api, uid,
+             f"✅ Перевод выполнен!\n\n"
+             f"💸 Отправлено: {fmt_big(amount)}$\n"
+             f"👤 Получатель: {target_user['username']}\n"
+             f"💰 Ваш баланс: {fmt_big(sender['balance'] - amount)}$\n"
+             f"📊 Остаток лимита сегодня: {fmt_big(new_limit_left)}$",
+             peer_id)
+        return
+
+    # ========== ВАРН (АДМИН) ==========
+    if cmd in ["варн", "warn"]:
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ У вас нет прав.", peer_id)
+            return
+        target_id = None
+        reason = "Без причины"
+        reply_msg = msg.get('reply_message')
+        if reply_msg:
+            target_id = reply_msg['from_id']
+            reason = ' '.join(parts[1:]) if len(parts) > 1 else "Без причины"
+        elif len(parts) > 1:
+            target_id = resolve_user_id(api, parts[1])
+            reason = ' '.join(parts[2:]) if len(parts) > 2 else "Без причины"
+        if not target_id:
+            send(api, uid, "❓ Укажите пользователя.\nПример: /варн @username флуд", peer_id)
+            return
+        if target_id == uid:
+            send(api, uid, "😂 Нельзя варнить себя.", peer_id)
+            return
+        target_user = get_user(target_id)
+        if not target_user:
+            add_or_update_user(api, target_id)
+            target_user = get_user(target_id)
+        warns = (target_user['warns'] or 0) + 1
+        try:
+            reasons = json.loads(target_user['warn_reasons'] or '[]')
+        except:
+            reasons = []
+        reasons.append(reason)
+        with sqlite3.connect(DB_NAME) as c:
+            c.execute("UPDATE users SET warns=?, warn_reasons=? WHERE id=?",
+                      (warns, json.dumps(reasons, ensure_ascii=False), target_id))
+            c.commit()
+        admin_name, admin_link = get_vk_link(api, uid)
+        target_name, target_link = get_vk_link(api, target_id)
+        if warns >= 3:
+            msg_text = (
+                f"⚠️ ПРЕДУПРЕЖДЕНИЕ [{warns}/3]\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"👮 Модератор: {admin_name} ({admin_link})\n"
+                f"👤 Нарушитель: {target_name} ({target_link})\n"
+                f"📋 Причина: {reason}\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"🚫 3 варна — исключаю из беседы!"
+            )
+            send(api, uid, msg_text, peer_id)
+            if chat_id:
+                try:
+                    api.messages.removeChatUser(chat_id=chat_id, member_id=target_id)
+                except Exception as e:
+                    send(api, uid, f"❌ Не удалось кикнуть: {e}", peer_id)
+            with sqlite3.connect(DB_NAME) as c:
+                c.execute("UPDATE users SET warns=0, warn_reasons='[]' WHERE id=?", (target_id,))
+                c.commit()
+        else:
+            msg_text = (
+                f"⚠️ ПРЕДУПРЕЖДЕНИЕ [{warns}/3]\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"👮 Модератор: {admin_name} ({admin_link})\n"
+                f"👤 Нарушитель: {target_name} ({target_link})\n"
+                f"📋 Причина: {reason}\n"
+                f"━━━━━━━━━━━━━━━"
+            )
+            send(api, uid, msg_text, peer_id)
+        return
+
+    # ========== ВАРНЫ (ПРОСМОТР) ==========
+    if cmd in ["варны", "warns"]:
+        target_id = uid
+        if len(parts) > 1:
+            target_id = resolve_user_id(api, parts[1])
+        if not target_id:
+            send(api, uid, "❌ Пользователь не найден.", peer_id)
+            return
+        target_user = get_user(target_id)
+        if not target_user:
+            send(api, uid, "❌ Пользователь не зарегистрирован в боте.", peer_id)
+            return
+        warns = target_user['warns'] or 0
+        try:
+            reasons = json.loads(target_user['warn_reasons'] or '[]')
+        except:
+            reasons = []
+        target_name = target_user['username'] or f"id{target_id}"
+        text = f"⚠️ Варны пользователя {target_name}: [{warns}/3]\n\n"
+        if reasons:
+            for i, r in enumerate(reasons, 1):
+                text += f"{i}. {r}\n"
+        else:
+            text += "Варнов нет ✅"
+        send(api, uid, text, peer_id)
+        return
+
+    # ========== СНЯТЬ ВАРН (АДМИН) ==========
+    if cmd in ["снятьварн", "unwarn"]:
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ У вас нет прав.", peer_id)
+            return
+        target_id = None
+        reply_msg = msg.get('reply_message')
+        if reply_msg:
+            target_id = reply_msg['from_id']
+        elif len(parts) > 1:
+            target_id = resolve_user_id(api, parts[1])
+        if not target_id:
+            send(api, uid, "❓ Укажите пользователя.\nПример: /снятьварн @username", peer_id)
+            return
+        target_user = get_user(target_id)
+        if not target_user:
+            send(api, uid, "❌ Пользователь не найден.", peer_id)
+            return
+        warns = target_user['warns'] or 0
+        if warns == 0:
+            send(api, uid, f"✅ У {target_user['username']} нет варнов.", peer_id)
+            return
+        try:
+            reasons = json.loads(target_user['warn_reasons'] or '[]')
+        except:
+            reasons = []
+        if reasons:
+            reasons.pop()
+        new_warns = max(0, warns - 1)
+        with sqlite3.connect(DB_NAME) as c:
+            c.execute("UPDATE users SET warns=?, warn_reasons=? WHERE id=?",
+                      (new_warns, json.dumps(reasons, ensure_ascii=False), target_id))
+            c.commit()
+        send(api, uid,
+             f"✅ Снят 1 варн с {target_user['username']}.\nОсталось варнов: [{new_warns}/3]", peer_id)
+        return
+
+    # ========== МУТ (АДМИН) ==========
+    if cmd in ["мут", "mute"]:
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ У вас нет прав.", peer_id)
+            return
+        target_id = None
+        minutes = None
+        reply_msg = msg.get('reply_message')
+        if reply_msg:
+            target_id = reply_msg['from_id']
+            try:
+                minutes = int(parts[1])
+            except:
+                pass
+        elif len(parts) >= 3:
+            target_id = resolve_user_id(api, parts[1])
+            try:
+                minutes = int(parts[2])
+            except:
+                pass
+        if not target_id:
+            send(api, uid, "❓ Укажите пользователя и время в минутах.\nПример: /мут @username 10", peer_id)
+            return
+        if not minutes or minutes <= 0:
+            send(api, uid, "❌ Укажите время в минутах (число больше 0).\nПример: /мут @username 10", peer_id)
+            return
+        if target_id == uid:
+            send(api, uid, "😂 Нельзя замутить себя.", peer_id)
+            return
+        target_user = get_user(target_id)
+        if not target_user:
+            add_or_update_user(api, target_id)
+            target_user = get_user(target_id)
+        muted_until = datetime.now() + timedelta(minutes=minutes)
+        with sqlite3.connect(DB_NAME) as c:
+            c.execute("UPDATE users SET muted_until=? WHERE id=?",
+                      (muted_until.strftime("%Y-%m-%d %H:%M:%S"), target_id))
+            c.commit()
+        admin_name, admin_link = get_vk_link(api, uid)
+        target_name, target_link = get_vk_link(api, target_id)
+        msg_text = (
+            f"🔇 МУТ\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"👮 Модератор: {admin_name} ({admin_link})\n"
+            f"👤 Нарушитель: {target_name} ({target_link})\n"
+            f"⏱ Длительность: {minutes} мин\n"
+            f"🕐 Размут в: {muted_until.strftime('%H:%M:%S')}\n"
+            f"━━━━━━━━━━━━━━━"
+        )
+        send(api, uid, msg_text, peer_id)
+        return
+
+    # ========== РАЗМУТ (АДМИН) ==========
+    if cmd in ["размут", "unmute"]:
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ У вас нет прав.", peer_id)
+            return
+        target_id = None
+        reply_msg = msg.get('reply_message')
+        if reply_msg:
+            target_id = reply_msg['from_id']
+        elif len(parts) > 1:
+            target_id = resolve_user_id(api, parts[1])
+        if not target_id:
+            send(api, uid, "❓ Укажите пользователя.\nПример: /размут @username", peer_id)
+            return
+        target_user = get_user(target_id)
+        if not target_user:
+            send(api, uid, "❌ Пользователь не найден.", peer_id)
+            return
+        with sqlite3.connect(DB_NAME) as c:
+            c.execute("UPDATE users SET muted_until=NULL WHERE id=?", (target_id,))
+            c.commit()
+        target_name = target_user['username'] or f"id{target_id}"
+        send(api, uid, f"🔊 {target_name} размучен.", peer_id)
+        return
+
+    # ========== БАН (БЛОКИРОВКА) ==========
+    if cmd in ["блок", "ban"]:
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ У вас нет прав.", peer_id)
+            return
+        target_id = None
+        reason = "Без причины"
+        reply_msg = msg.get('reply_message')
+        if reply_msg:
+            target_id = reply_msg['from_id']
+            reason = ' '.join(parts[1:]) if len(parts) > 1 else "Без причины"
+        elif len(parts) > 1:
+            target_id = resolve_user_id(api, parts[1])
+            reason = ' '.join(parts[2:]) if len(parts) > 2 else "Без причины"
+        if not target_id:
+            send(api, uid, "❓ Укажите пользователя.\nПример: /ban @username читерство", peer_id)
+            return
+        if target_id == uid:
+            send(api, uid, "😂 Нельзя забанить себя.", peer_id)
+            return
+        target_user = get_user(target_id)
+        if not target_user:
+            add_or_update_user(api, target_id)
+            target_user = get_user(target_id)
+        with sqlite3.connect(DB_NAME) as c:
+            c.execute("UPDATE users SET is_blocked=1 WHERE id=?", (target_id,))
+            c.commit()
+        admin_name, admin_link = get_vk_link(api, uid)
+        target_name, target_link = get_vk_link(api, target_id)
+        msg_text = (
+            f"🔨 БАН\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"👮 Модератор: {admin_name} ({admin_link})\n"
+            f"👤 Нарушитель: {target_name} ({target_link})\n"
+            f"📋 Причина: {reason}\n"
+            f"━━━━━━━━━━━━━━━"
+        )
+        send(api, uid, msg_text, peer_id)
+        return
+
+    # ========== РАЗБАН (СНЯТИЕ БЛОКИРОВКИ) ==========
+    if cmd in ["разблок", "unban"]:
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ У вас нет прав.", peer_id)
+            return
+        target_id = None
+        reply_msg = msg.get('reply_message')
+        if reply_msg:
+            target_id = reply_msg['from_id']
+        elif len(parts) > 1:
+            target_id = resolve_user_id(api, parts[1])
+        if not target_id:
+            send(api, uid, "❓ Укажите пользователя.\nПример: /unban @username", peer_id)
+            return
+        target_user = get_user(target_id)
+        if not target_user:
+            send(api, uid, "❌ Пользователь не найден.", peer_id)
+            return
+        with sqlite3.connect(DB_NAME) as c:
+            c.execute("UPDATE users SET is_blocked=0 WHERE id=?", (target_id,))
+            c.commit()
+        target_name, target_link = get_vk_link(api, target_id)
+        send(api, uid, f"✅ Бан снят с {target_name} ({target_link}).", peer_id)
+        return
+
+    # ========== КЕЙСЫ ==========
+    if cmd in ["кейсы", "cases"]:
+        inv = {}
+        try:
+            inv = json.loads(user['cases_inventory'] or '{}')
+        except:
+            pass
+        text = (
+            "🎰 СИСТЕМА КЕЙСОВ 🎰\n"
+            "━━━━━━━━━━━━━━━\n"
+        )
+        for key, case in CASES.items():
+            owned = inv.get(key, 0)
+            text += f"{case['emoji']} {key}. {case['name']} — {fmt_big(case['price'])}$"
+            if owned:
+                text += f" (у вас: {owned} шт.)"
+            text += "\n"
+        text += (
+            "━━━━━━━━━━━━━━━\n"
+            "📦 Купить: /buycase [1/2] [количество]\n"
+            "🔓 Открыть: /opencase [1/2]"
+        )
+        send(api, uid, text, peer_id)
+        return
+
+    if cmd in ["buycase", "купитькейс"]:
+        if len(parts) < 2:
+            send(api, uid, "❌ Формат: /buycase [1/2] [количество]\nПример: /buycase 1 3", peer_id)
+            return
+        case_num = parts[1]
+        if case_num not in CASES:
+            send(api, uid, "❌ Кейс не найден. Доступны: 1, 2\nПосмотреть: /кейсы", peer_id)
+            return
+        count = 1
+        if len(parts) >= 3:
+            try:
+                count = int(parts[2])
+                if count <= 0:
+                    send(api, uid, "❌ Количество должно быть больше 0", peer_id)
+                    return
+                if count > 50:
+                    send(api, uid, "❌ Максимум 50 кейсов за раз", peer_id)
+                    return
+            except:
+                send(api, uid, "❌ Укажите количество числом", peer_id)
+                return
+
+        case = CASES[case_num]
+        total_cost = case['price'] * count
+        if user['balance'] < total_cost:
+            send(api, uid,
+                 f"❌ Недостаточно средств!\n"
+                 f"💰 Нужно: {fmt_big(total_cost)}$\n"
+                 f"💳 У вас: {fmt_big(user['balance'])}$",
+                 peer_id)
+            return
+
+        update_balance(uid, -total_cost)
+        try:
+            inv = json.loads(user['cases_inventory'] or '{}')
+        except:
+            inv = {}
+        inv[case_num] = inv.get(case_num, 0) + count
+        with sqlite3.connect(DB_NAME) as c:
+            c.execute("UPDATE users SET cases_inventory=? WHERE id=?",
+                      (json.dumps(inv), uid))
+            c.commit()
+        send(api, uid,
+             f"✅ Куплено {count} шт. «{case['name']}» за {fmt_big(total_cost)}$\n"
+             f"📦 Всего в инвентаре: {inv[case_num]} шт.\n"
+             f"🔓 Открыть: /opencase {case_num}",
+             peer_id)
+        return
+
+    if cmd in ["opencase", "открытькейс"]:
+        if len(parts) < 2:
+            send(api, uid, "❌ Формат: /opencase [1/2]\nПример: /opencase 1", peer_id)
+            return
+        case_num = parts[1]
+        if case_num not in CASES:
+            send(api, uid, "❌ Кейс не найден. Доступны: 1, 2", peer_id)
+            return
+        try:
+            inv = json.loads(user['cases_inventory'] or '{}')
+        except:
+            inv = {}
+        owned = inv.get(case_num, 0)
+        if owned <= 0:
+            case_name = CASES[case_num]['name']
+            send(api, uid,
+                 f"❌ У вас нет «{case_name}».\n"
+                 f"📦 Купить: /buycase {case_num} [количество]",
+                 peer_id)
+            return
+
+        case = CASES[case_num]
+        prizes  = case['prizes']
+        amounts = [p[0] for p in prizes]
+        weights = [p[1] for p in prizes]
+
+        won_amount = random.choices(amounts, weights=weights, k=1)[0]
+
+        inv[case_num] = owned - 1
+        if inv[case_num] == 0:
+            del inv[case_num]
+        update_balance(uid, won_amount)
+        update_experience(uid, 20)
+        with sqlite3.connect(DB_NAME) as c:
+            c.execute("UPDATE users SET cases_inventory=? WHERE id=?",
+                      (json.dumps(inv), uid))
+            c.commit()
+
+        remaining = inv.get(case_num, 0)
+        remaining_str = f"\n📦 Осталось кейсов: {remaining} шт." if remaining > 0 else ""
+        send(api, uid,
+             f"{case['emoji']} Вы получили {fmt_big(won_amount)}$ с кейса #{case_num}{remaining_str}",
+             peer_id)
+        return
+
+    # ========== БРАКИ ==========
+    if cmd in ["свадьба", "marry"]:
+        if len(parts) < 2:
+            send(api, uid, "💌 Введите юзернейм кому хотите сделать предложение.\nПример: /свадьба @durov", peer_id)
+            return
+        target_id = resolve_user_id(api, parts[1])
+        if not target_id:
+            send(api, uid, "❌ Пользователь не найден.", peer_id)
+            return
+        if target_id == uid:
+            send(api, uid, "😂 Нельзя жениться на себе.", peer_id)
+            return
+        if user['married_to']:
+            partner = get_user(user['married_to'])
+            partner_name = partner['username'] if partner else f"id{user['married_to']}"
+            send(api, uid, f"❌ Вы уже в браке с {partner_name}.\nСначала разведитесь: /развод @юзернейм", peer_id)
+            return
+        target_user = get_user(target_id)
+        if not target_user:
+            add_or_update_user(api, target_id)
+            target_user = get_user(target_id)
+        if target_user['married_to']:
+            send(api, uid, f"❌ {target_user['username']} уже в браке.", peer_id)
+            return
+        # Проверяем, не отправляли ли уже предложение
+        try:
+            my_proposals = json.loads(user['proposals_in'] or '[]')
+        except:
+            my_proposals = []
+        if target_id in my_proposals:
+            send(api, uid, f"⏳ Вы уже отправили предложение {target_user['username']}. Ждите ответа.", peer_id)
+            return
+
+        # Сохраняем ID предложившего в proposals_in цели
+        try:
+            target_proposals = json.loads(target_user['proposals_in'] or '[]')
+        except:
+            target_proposals = []
+        target_proposals.append(uid)
+        my_proposals.append(target_id)
+        with sqlite3.connect(DB_NAME) as c:
+            c.execute("UPDATE users SET proposals_in=? WHERE id=?", (json.dumps(target_proposals), target_id))
+            c.execute("UPDATE users SET proposals_in=? WHERE id=?", (json.dumps(my_proposals), uid))
+            c.commit()
+
+        my_name, _ = get_vk_link(api, uid)
+        target_name_str = target_user['username'] or f"id{target_id}"
+        kb = VkKeyboard(inline=True)
+        kb.add_callback_button("💍 Принять", color=VkKeyboardColor.POSITIVE,
+                               payload={"cmd": "marry_accept", "from": uid, "to": target_id})
+        kb.add_callback_button("❌ Отказать", color=VkKeyboardColor.NEGATIVE,
+                               payload={"cmd": "marry_decline", "from": uid, "to": target_id})
+        send(api, uid,
+             f"💌 {my_name} делает предложение {target_name_str}!\n"
+             f"━━━━━━━━━━━━━━━\n"
+             f"@id{target_id} ({target_name_str}), вы хотите вступить в брак?",
+             peer_id, keyboard=kb)
+        return
+
+    if cmd in ["развод", "divorce"]:
+        if not user['married_to']:
+            send(api, uid, "❌ Вы не состоите в браке.", peer_id)
+            return
+        if len(parts) < 2:
+            partner = get_user(user['married_to'])
+            partner_name = partner['username'] if partner else f"id{user['married_to']}"
+            send(api, uid, f"💔 Укажите партнёра для развода.\nПример: /развод @{partner_name}", peer_id)
+            return
+        target_id = resolve_user_id(api, parts[1])
+        if not target_id or target_id != user['married_to']:
+            send(api, uid, "❌ Вы не в браке с этим человеком.", peer_id)
+            return
+        my_name, _ = get_vk_link(api, uid)
+        their_name, _ = get_vk_link(api, target_id)
+        with sqlite3.connect(DB_NAME) as c:
+            c.execute("UPDATE users SET married_to=NULL, married_at=NULL WHERE id=?", (uid,))
+            c.execute("UPDATE users SET married_to=NULL, married_at=NULL WHERE id=?", (target_id,))
+            c.commit()
+        send(api, uid,
+             f"💔 РАЗВОД\n"
+             f"━━━━━━━━━━━━━━━\n"
+             f"{my_name} и {their_name} больше не в браке.",
+             peer_id)
+        return
+
+    if cmd in ["мойбрак", "mybride", "mymarriage"]:
+        if not user['married_to']:
+            send(api, uid, "💔 Вы не состоите в браке.\nПредложить: /свадьба @юзернейм", peer_id)
+            return
+        partner = get_user(user['married_to'])
+        partner_name = partner['username'] if partner else f"id{user['married_to']}"
+        married_at = user['married_at']
+        days = 0
+        if married_at:
+            try:
+                dt = datetime.strptime(married_at, "%Y-%m-%d %H:%M:%S")
+                days = (datetime.now() - dt).days
+            except:
+                pass
+        send(api, uid,
+             f"💒 МОЙ БРАК\n"
+             f"━━━━━━━━━━━━━━━\n"
+             f"💍 Партнёр: {partner_name}\n"
+             f"📅 В браке: {days} дн.",
+             peer_id)
+        return
+
+    if cmd in ["браки", "marriages"]:
+        with sqlite3.connect(DB_NAME) as c:
+            c.row_factory = sqlite3.Row
+            pairs = c.execute(
+                "SELECT u1.username as n1, u2.username as n2, u1.married_at as since "
+                "FROM users u1 JOIN users u2 ON u1.married_to=u2.id "
+                "WHERE u1.married_to IS NOT NULL AND u1.id < u1.married_to "
+                "ORDER BY u1.married_at ASC"
+            ).fetchall()
+        if not pairs:
+            send(api, uid, "💒 Пар в браке пока нет.", peer_id)
+            return
+        text = "💒 БРАКИ БОТА\n━━━━━━━━━━━━━━━\n"
+        for i, p in enumerate(pairs, 1):
+            days = 0
+            if p['since']:
+                try:
+                    dt = datetime.strptime(p['since'], "%Y-%m-%d %H:%M:%S")
+                    days = (datetime.now() - dt).days
+                except:
+                    pass
+            text += f"{i}. 💍 {p['n1']} & {p['n2']} — {days} дн.\n"
+        send(api, uid, text, peer_id)
+        return
+
+    # ========== СТАТИСТИКА БОТА ==========
+    if cmd in ["stats", "статс", "статистика"]:
+        with sqlite3.connect(DB_NAME) as c:
+            c.row_factory = sqlite3.Row
+            total_users    = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            active_users   = c.execute("SELECT COUNT(*) FROM users WHERE is_blocked=0").fetchone()[0]
+            banned_users   = c.execute("SELECT COUNT(*) FROM users WHERE is_blocked=1").fetchone()[0]
+            total_balance  = c.execute("SELECT SUM(balance) FROM users").fetchone()[0] or 0
+            total_bank     = c.execute("SELECT SUM(bank) FROM users").fetchone()[0] or 0
+            total_games    = c.execute("SELECT SUM(games_played) FROM users").fetchone()[0] or 0
+            total_sent     = c.execute("SELECT SUM(total_sent) FROM users").fetchone()[0] or 0
+            vip_count      = c.execute("SELECT COUNT(*) FROM users WHERE vip=1").fetchone()[0]
+            total_cars     = c.execute("SELECT cars FROM users").fetchall()
+            cars_count     = sum(len(json.loads(r['cars'] or '[]')) for r in total_cars)
+            richest        = c.execute("SELECT username, balance FROM users ORDER BY balance DESC LIMIT 1").fetchone()
+        rich_str = f"{richest['username']} ({fmt_big(richest['balance'])}$)" if richest else "—"
+        text = (
+            f"📊 СТАТИСТИКА БОТА 📊\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"👥 Игроков всего: {total_users}\n"
+            f"✅ Активных: {active_users}\n"
+            f"🔨 Забанено: {banned_users}\n"
+            f"👑 VIP игроков: {vip_count}\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"💰 Деньги на руках: {fmt_big(total_balance)}$\n"
+            f"🏛 В банках: {fmt_big(total_bank)}$\n"
+            f"💸 Всего переведено: {fmt_big(total_sent)}$\n"
+            f"🎰 Игр сыграно: {total_games}\n"
+            f"🚗 Машин куплено: {cars_count}\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"🏆 Богатейший: {rich_str}"
+        )
+        send(api, uid, text, peer_id)
+        return
+
+    # ========== КАСТОМНЫЕ АЛИАСЫ (УПРАВЛЕНИЕ) ==========
+    if cmd == "cmd":
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ У вас нет прав.", peer_id)
+            return
+        if len(parts) < 3:
+            send(api, uid, "❌ Формат: /cmd [оригинал] [новый алиас]\nПример: /cmd kick пака", peer_id)
+            return
+        original = parts[1].lower().lstrip('/')
+        alias = parts[2].lower().lstrip('/')
+        if alias == original:
+            send(api, uid, "❌ Алиас не может совпадать с оригиналом.", peer_id)
+            return
+        custom_cmds = load_custom_cmds()
+        custom_cmds[alias] = original
+        save_custom_cmds(custom_cmds)
+        send(api, uid, f"✅ Теперь /{alias} работает как /{original}", peer_id)
+        return
+
+    if cmd == "delcmd":
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ У вас нет прав.", peer_id)
+            return
+        if len(parts) < 2:
+            send(api, uid, "❌ Формат: /delcmd [алиас]\nПример: /delcmd пака", peer_id)
+            return
+        alias = parts[1].lower().lstrip('/')
+        custom_cmds = load_custom_cmds()
+        if alias not in custom_cmds:
+            send(api, uid, f"❌ Алиас /{alias} не найден.", peer_id)
+            return
+        del custom_cmds[alias]
+        save_custom_cmds(custom_cmds)
+        send(api, uid, f"✅ Алиас /{alias} удалён.", peer_id)
+        return
+
+    if cmd == "cmds":
+        custom_cmds = load_custom_cmds()
+        if not custom_cmds:
+            send(api, uid, "📋 Кастомных алиасов нет.\nДобавить: /cmd [оригинал] [алиас]", peer_id)
+            return
+        text = "📋 КАСТОМНЫЕ АЛИАСЫ\n━━━━━━━━━━━━━━━\n"
+        for alias, original in custom_cmds.items():
+            text += f"/{alias} → /{original}\n"
+        text += "━━━━━━━━━━━━━━━\nУдалить: /delcmd [алиас]"
+        send(api, uid, text, peer_id)
+        return
+
+    # ========== ПОМОЩЬ ==========
+    if cmd in ["help", "команды"]:
+        help_text = (
+            "🎮 КОМАНДЫ БОТА 🎮\n\n"
+            "👤 Профиль: /меню\n\n"
+            "🎁 Бонус: /бонус (раз в 3 часа, 50000-100000$)\n\n"
+            "🚗 Машины:\n/машины — список доступных\n/buycar [номер] — купить (1-3)\n\n"
+            "🏦 Финансы:\n/банк положить [сумма]\n/банк снять [сумма]\n/топ — топ богачей\n\n"
+            "💸 Перевод: /pay [id] [сумма] (лимит 250M$ в день до 00:00 МСК)\n\n"
+            "🛒 Магазин: /shop, /buy [товар] [кол-во]\n\n"
+            "🎰 Казино: /казино [сумма]\n\n"
+            "📦 Кейсы: /кейсы — список, /buycase [1/2] [кол-во], /opencase [1/2]\n\n"
+            "💒 Браки: /свадьба @юзер, /развод @юзер, /мойбрак, /браки\n\n"
+            "📊 Статистика: /stats\n\n"
+            "👑 Админ: /kick, /ban, /unban, /mute [мин], /unmute, /warn, /unwarn, /warns, /givemoney [сумма]"
+        )
+        send(api, uid, help_text, peer_id)
+        return
+
+def handle_message_event(api, event):
+    try:
+        obj = event.object
+        logger.info(f"MESSAGE_EVENT raw: {dict(obj)}")
+    except Exception as e:
+        logger.error(f"MESSAGE_EVENT dump error: {e}")
+        obj = event.object
+
+    uid = obj.get('user_id')
+    peer_id = obj.get('peer_id')
+    event_id = obj.get('event_id')
+    payload = obj.get('payload', {})
+
+    logger.info(f"MESSAGE_EVENT uid={uid} peer={peer_id} payload={payload!r}")
+
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except:
+            payload = {}
+    elif not isinstance(payload, dict):
+        payload = {}
+
+    def answer(text="✅"):
+        try:
+            api.messages.sendMessageEventAnswer(
+                event_id=event_id,
+                user_id=uid,
+                peer_id=peer_id,
+                event_data=json.dumps({"type": "show_snackbar", "text": text}, ensure_ascii=False)
+            )
+            logger.info(f"answer() sent snackbar: {text}")
+        except Exception as e:
+            logger.error(f"sendMessageEventAnswer error: {e}")
+
+    try:
+        cmd = payload.get('cmd')
+        logger.info(f"handle_message_event cmd={cmd}")
+
+        if cmd == 'property':
+            cars = get_user_cars(uid)
+            logger.info(f"property: cars={cars}")
+            if not cars:
+                answer("У вас пока нет машин")
+                send(api, uid, "🏠 ВАШЕ ИМУЩЕСТВО 🏠\n\nУ вас пока нет машин.\nКупить можно через /машины", peer_id)
+                return
+            keyboard = VkKeyboard(inline=True)
+            keyboard.add_callback_button("🚗 Мои машины", color=VkKeyboardColor.PRIMARY, payload={"cmd": "show_cars"})
+            answer(f"Машин: {len(cars)} шт.")
+            send(api, uid, f"🏠 ВАШЕ ИМУЩЕСТВО 🏠\n\n🚗 Автомобилей: {len(cars)} шт.", peer_id, keyboard=keyboard)
+
+        elif cmd == 'show_cars':
+            cars = get_user_cars(uid)
+            logger.info(f"show_cars: cars={cars}")
+            if not cars:
+                answer("У вас нет машин")
+                return
+            answer("Загружаю машины...")
+            send(api, uid, "🚗 ВАШИ АВТОМОБИЛИ 🚗\n", peer_id)
+            for car_name in cars:
+                car_info = None
+                for key, car in CARS.items():
+                    if car['name'].lower() == car_name.lower():
+                        car_info = car
+                        break
+                if car_info:
+                    send(api, uid, f"{car_info['emoji']} {car_name}\n💰 Стоимость: {fmt_big(car_info['price'])}$", peer_id, attachment=car_info['photo'])
+                else:
+                    send(api, uid, f"🚗 {car_name}", peer_id)
+
+        elif cmd in ('marry_accept', 'marry_decline'):
+            proposer_id = payload.get('from')
+            target_id   = payload.get('to')
+            # Кнопку должен нажать именно адресат
+            if uid != target_id:
+                answer("Это предложение не для вас 😅")
+                return
+            proposer = get_user(proposer_id)
+            target   = get_user(target_id)
+            if not proposer or not target:
+                answer("Ошибка: пользователь не найден")
+                return
+            # Очищаем предложения у обоих
+            def clear_proposals(u_id, other_id):
+                u = get_user(u_id)
+                try:
+                    props = json.loads(u['proposals_in'] or '[]')
+                except:
+                    props = []
+                if other_id in props:
+                    props.remove(other_id)
+                with sqlite3.connect(DB_NAME) as c:
+                    c.execute("UPDATE users SET proposals_in=? WHERE id=?", (json.dumps(props), u_id))
+                    c.commit()
+
+            if cmd == 'marry_accept':
+                if proposer['married_to'] or target['married_to']:
+                    answer("Кто-то из вас уже в браке 💔")
+                    return
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                with sqlite3.connect(DB_NAME) as c:
+                    c.execute("UPDATE users SET married_to=?, married_at=? WHERE id=?",
+                              (target_id, now_str, proposer_id))
+                    c.execute("UPDATE users SET married_to=?, married_at=? WHERE id=?",
+                              (proposer_id, now_str, target_id))
+                    c.commit()
+                clear_proposals(proposer_id, target_id)
+                clear_proposals(target_id, proposer_id)
+                proposer_name, _ = get_vk_link(api, proposer_id)
+                target_name, _   = get_vk_link(api, target_id)
+                answer("💍 Вы приняли предложение!")
+                send(api, uid,
+                     f"💒 СВАДЬБА!\n"
+                     f"━━━━━━━━━━━━━━━\n"
+                     f"💍 {proposer_name} и {target_name} теперь в браке!\n"
+                     f"━━━━━━━━━━━━━━━\n"
+                     f"💌 /мойбрак — информация о браке",
+                     peer_id)
+            else:
+                clear_proposals(proposer_id, target_id)
+                clear_proposals(target_id, proposer_id)
+                proposer_name, _ = get_vk_link(api, proposer_id)
+                target_name, _   = get_vk_link(api, target_id)
+                answer("❌ Вы отказали")
+                send(api, uid,
+                     f"💔 {target_name} отказал(а) {proposer_name}.",
+                     peer_id)
+
+    except Exception as e:
+        logger.error(f"handle_message_event EXCEPTION: {e}", exc_info=True)
+
+def main():
+    init_db()
+    logger.info("🚀 Запуск бота...")
+    vk_session = VkApi(token=VK_TOKEN, api_version="5.131")
+    
+    while True:
+        try:
+            vk = vk_session.get_api()
+            logger.info("✅ Авторизация успешна!")
+            try:
+                vk.groups.setLongPollSettings(
+                    group_id=GROUP_ID,
+                    enabled=1,
+                    message_new=1,
+                    message_event=1
+                )
+                logger.info("✅ LongPoll settings updated (message_event=1)")
+            except Exception as e:
+                logger.warning(f"setLongPollSettings: {e}")
+            longpoll = VkBotLongPoll(vk_session, GROUP_ID)
+            logger.info("✅ Бот работает! Напишите /меню")
+            
+            for event in longpoll.listen():
+                logger.info(f"EVENT type={event.type}")
+                if event.type == VkBotEventType.MESSAGE_NEW:
+                    handle_message(vk, event)
+                elif event.type == VkBotEventType.MESSAGE_EVENT:
+                    handle_message_event(vk, event)
+        except Exception as e:
+            logger.error(f"❌ Ошибка: {e}")
+            time.sleep(5)
+            vk_session = VkApi(token=VK_TOKEN, api_version="5.131")
+
+if __name__ == "__main__":
+    main()
