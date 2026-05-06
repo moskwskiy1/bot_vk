@@ -1,0 +1,2956 @@
+#!/usr/bin/env python3
+
+import random, sqlite3, logging, time, re, json, math, os
+from datetime import datetime, timedelta, timezone
+from vk_api import VkApi
+from vk_api.bot_longpoll import VkBotLongPoll, VkBotEventType
+from vk_api.keyboard import VkKeyboard, VkKeyboardColor
+from vk_api.utils import get_random_id
+from huggingface_hub import HfApi
+
+# ---------- КОНФИГ ----------
+VK_TOKEN = os.environ.get("VK_TOKEN", "vk1.a.wEVffgtJ5Szki-vnUgd_oPES5fId_uLZWo7-tDLy5sW5x-E52mZFzYxf3sC1RR6CWr6xue1FFYX0vJBr-saEW4Ym2W_gENt5WvwcqedTSDsccptFhzRpdWD1UC8brGpELjTdM5d7YLE1HNr0VUpqyZISY3Uy1NWp-wr4cooyTpLxYg5UOJiB2v5W3lJq_ZGlXve5zYzblSzeZO0ONA_tiQ")
+GROUP_ID = 238368566
+ADMIN_IDS_FILE = "admin_ids.txt"
+START_BALANCE = 50000.0
+BITCOIN_PRICE_BASE = 25000
+RATING_PRICE = 10000
+EXP_PER_HOUR = 250
+DB_NAME = "casino_vk.db"
+CUSTOM_CMDS_FILE = "custom_cmds.json"
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# ========== НАСТРОЙКИ ДЛЯ ДАТАСЕТА ==========
+HF_DATASET = "botvk/vk_casino_db"  #vk_casino_db
+DB_FILE = "casino_vk.db"
+
+# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С ДАТАСЕТОМ ==========
+def backup_db():
+    """Сохраняет БД в датасет"""
+    token = os.environ.get("HF_TOKEN")
+    if not token:
+        return
+    
+    if not os.path.exists(DB_FILE):
+        return
+    
+    try:
+        api = HfApi(token=token)
+        api.upload_file(
+            path_or_fileobj=DB_FILE,
+            path_in_repo=DB_FILE,
+            repo_id=HF_DATASET,
+            repo_type="dataset",
+        )
+        print("✅ БД сохранена в датасет")
+    except Exception as e:
+        print(f"❌ Ошибка сохранения БД: {e}")
+
+def restore_db():
+    """Восстанавливает БД из датасета"""
+    token = os.environ.get("HF_TOKEN")
+    if not token:
+        return
+    
+    if os.path.exists(DB_FILE):
+        return
+    
+    try:
+        api = HfApi(token=token)
+        api.hf_hub_download(
+            repo_id=HF_DATASET,
+            filename=DB_FILE,
+            repo_type="dataset",
+            local_dir=".",
+        )
+        print("✅ БД восстановлена из датасета")
+    except:
+        print("⚠️ БД в датасете не найдена, создаётся новая")
+
+# ========== VIP УРОВНИ ==========
+VIP_LEVELS = {
+    0: {"name": "Стандарт", "emoji": "⭐", "bank_rate": 0.05, "deposit_rate": 0.06, "deposit_tax": 0.06, "day_limit": 250_000_000, "max_energy": 20, "max_cases": 10, "max_nick_len": 20, "bonus_mult": 1.0, "exp_mult": 1.0, "mine_mult": 1.0, "game_bonus": 0},
+    1: {"name": "Standard VIP", "emoji": "💎", "bank_rate": 0.07, "deposit_rate": 0.08, "deposit_tax": 0.045, "day_limit": 5e23, "max_energy": 25, "max_cases": 20, "max_nick_len": 30, "bonus_mult": 2.0, "exp_mult": 1.0, "mine_mult": 1.0, "game_bonus": 5, "price": 100_000, "label": "1️⃣ Standard VIP — 100 000$"},
+    2: {"name": "Gold VIP", "emoji": "🥇", "bank_rate": 0.08, "deposit_rate": 0.10, "deposit_tax": 0.035, "day_limit": 1e24, "max_energy": 50, "max_cases": 40, "max_nick_len": 40, "bonus_mult": 3.0, "exp_mult": 1.0, "mine_mult": 1.0, "game_bonus": 10, "price": 1_000_000, "label": "2️⃣ Gold VIP — 1 000 000$"},
+    3: {"name": "Platinum VIP", "emoji": "👑", "bank_rate": 0.10, "deposit_rate": 0.12, "deposit_tax": 0.03, "day_limit": 5e24, "max_energy": 75, "max_cases": 60, "max_nick_len": 50, "bonus_mult": 4.0, "exp_mult": 2.0, "mine_mult": 2.0, "game_bonus": 15, "price": 10_000_000, "label": "3️⃣ Platinum VIP — 10 000 000$"},
+}
+
+# ========== ПОЛЕ ЧУДЕС ==========
+
+# ========== ПОЛЕ ЧУДЕС ==========
+# ========== ПОЛЕ ЧУДЕС ==========
+WORDLE_GAME = {}
+
+WORDLE_CATEGORIES = {
+    "человек": ["дружба", "любовь", "счастье", "улыбка", "мечта", "радость", "печаль", "надежда", "верность", "доверие"],
+    "быт": ["холодильник", "микроволновка", "пылесос", "стиралка", "утюг", "чайник", "сковорода", "полотенце", "швабра", "книга"],
+    "мир": ["океан", "пустыня", "джунгли", "вулкан", "гора", "река", "лес", "озеро", "планета", "звезда"],
+    "развлечения": ["кинотеатр", "аттракцион", "концерт", "театр", "футбол", "компьютер", "игрушка", "мультик", "квест", "дискотека"]
+}
+
+def start_wordle(user_id, category):
+    words = WORDLE_CATEGORIES.get(category, WORDLE_CATEGORIES["человек"])
+    word = random.choice(words).upper()
+    revealed = ["*"] * len(word)
+    WORDLE_GAME[user_id] = {
+        "word": word,
+        "revealed": revealed,
+        "wrong_letters": [],
+        "wrong_words": [],
+        "category": category,
+        "started": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    return word, revealed
+
+def get_wordle_display(game):
+    return " ".join(game["revealed"])
+
+def guess_wordle_letter(user_id, letter):
+    game = WORDLE_GAME.get(user_id)
+    if not game:
+        return None, "❌ Игра не запущена. Напишите поле чудес"
+    letter = letter.upper()
+    word = game["word"]
+    if letter in game["wrong_letters"] or letter in [l for l in word if l in game["revealed"]]:
+        return None, f"⚠️ Буква '{letter}' уже была!"
+    if letter in word:
+        for i, l in enumerate(word):
+            if l == letter:
+                game["revealed"][i] = letter
+        return True, f"✅ Есть буква '{letter}'!"
+    else:
+        game["wrong_letters"].append(letter)
+        return False, f"❌ Буквы '{letter}' нет в слове!"
+
+def guess_wordle_word(user_id, word_guess):
+    game = WORDLE_GAME.get(user_id)
+    if not game:
+        return None, "❌ Игра не запущена"
+    word_guess = word_guess.upper()
+    if word_guess == game["word"]:
+        game["revealed"] = list(game["word"])
+        return True, "🎉 Поздравляем! Вы угадали слово!"
+    else:
+        game["wrong_words"].append(word_guess)
+        return False, f"❌ Неправильно! Загадано не слово '{word_guess}'."
+
+# ========== ИМУЩЕСТВО ==========
+CARS = {"1": {"name": "Самокат", "price": 10_000, "emoji": "🛴", "photo": "photo-238368566_457239019"}, "2": {"name": "Лада Веста", "price": 200_000, "emoji": "🚗", "photo": "photo-238368566_457239017"}, "3": {"name": "Жигуль", "price": 100_000_000, "emoji": "🚙", "photo": "photo-238368566_457239018"}}
+PHONES = {"1": {"name": "Кнопочный Nokia", "price": 10_000, "emoji": "📟"}, "2": {"name": "Samsung Galaxy", "price": 300_000, "emoji": "📱"}, "3": {"name": "iPhone 15 Pro", "price": 1_500_000, "emoji": "📲"}}
+PLANES = {"1": {"name": "Cessna 172", "price": 5_000_000, "emoji": "🛩"}, "2": {"name": "Boeing 737", "price": 50_000_000, "emoji": "✈"}, "3": {"name": "Частный джет", "price": 500_000_000, "emoji": "🛫"}}
+YACHTS = {"1": {"name": "Моторная лодка", "price": 1_000_000, "emoji": "🚤"}, "2": {"name": "Яхта", "price": 20_000_000, "emoji": "🛥"}, "3": {"name": "Суперяхта", "price": 200_000_000, "emoji": "🚢"}}
+HELICOPTERS = {"1": {"name": "Robinson R22", "price": 2_000_000, "emoji": "🚁"}, "2": {"name": "Bell 407", "price": 30_000_000, "emoji": "🚁"}, "3": {"name": "VIP вертолет", "price": 150_000_000, "emoji": "🚁"}}
+HOUSES = {"1": {"name": "Комната в общежитии", "price": 100_000, "emoji": "🏠"}, "2": {"name": "Квартира", "price": 1_000_000, "emoji": "🏢"}, "3": {"name": "Особняк", "price": 100_000_000, "emoji": "🏰"}}
+
+PROPERTY_TYPES = {"машина": ("cars", CARS, "🚗"), "телефон": ("phones", PHONES, "📱"), "самолет": ("planes", PLANES, "✈"), "яхта": ("yachts", YACHTS, "🛥"), "вертолет": ("helicopters", HELICOPTERS, "🚁"), "дом": ("houses", HOUSES, "🏠")}
+
+# ========== РУДЫ ==========
+ORE_TYPES = {"уголь": {"emoji": "🪨", "base_price": 100, "mine_chance": 50}, "железо": {"emoji": "⚙️", "base_price": 500, "mine_chance": 30}, "золото": {"emoji": "🥇", "base_price": 2_000, "mine_chance": 15}, "алмаз": {"emoji": "💎", "base_price": 10_000, "mine_chance": 5}}
+
+# ========== БИЗНЕСЫ И ПОСТРОЙКИ ==========
+BUSINESSES = {
+    "business": {"name": "🏗 Бизнес", "price": 5_000_000, "income": 500_000, "cooldown_hours": 6, "col": "business_level", "col_time": "last_business_collect"},
+    "generator": {"name": "🏭 Генератор", "price": 2_000_000, "income": 100, "cooldown_hours": 4, "col": "generator_level", "col_time": "last_generator_collect", "ore": "уголь"},
+    "farm": {"name": "🧰 Майнинг ферма", "price": 10_000_000, "income": 0, "cooldown_hours": 8, "col": "farm_level", "col_time": "last_farm_collect", "bitcoin": 0.01},
+    "quarry": {"name": "⚠️ Карьер", "price": 8_000_000, "income": 50, "cooldown_hours": 6, "col": "quarry_level", "col_time": "last_quarry_collect", "ore": "железо"},
+    "tree": {"name": "🌳 Денежное дерево","price": 3_000_000, "income": 200_000, "cooldown_hours": 12, "col": "tree_level", "col_time": "last_tree_collect", "needs_water": True, "water_col": "tree_last_watered"},
+    "garden": {"name": "🌳 Сад", "price": 1_000_000, "income": 50_000, "cooldown_hours": 8, "col": "garden_level", "col_time": "last_garden_collect", "needs_water": True, "water_col": "garden_last_watered"},
+}
+
+# ========== ЗЕЛЬЯ ==========
+POTIONS = {
+    "1": {"name": "Зелье опыта", "emoji": "🔮", "effect": "exp", "value": 500, "cost_ore": {"уголь": 50, "железо": 10}},
+    "2": {"name": "Зелье энергии", "emoji": "⚡", "effect": "energy", "value": 10, "cost_ore": {"железо": 20, "золото": 5}},
+    "3": {"name": "Зелье удачи", "emoji": "🍀", "effect": "luck", "value": 30, "cost_ore": {"золото": 15, "алмаз": 2}},
+}
+
+# ========== КЕЙСЫ ==========
+CASES = {
+    "1": {"name": "Обычный кейс", "emoji": "🎁", "price": 2_000_000, "prizes": [(300_000, 8, "💸 300 000$"), (700_000, 8, "💸 700 000$"), (1_200_000, 8, "💸 1 200 000$"), (1_600_000, 6, "💸 1 600 000$"), (2_100_000, 15, "✨ 2 100 000$"), (2_500_000, 15, "✨ 2 500 000$"), (3_000_000, 13, "💰 3 000 000$"), (4_500_000, 12, "💰 4 500 000$"), (6_000_000, 7, "🔥 6 000 000$"), (10_000_000, 5, "🔥 10 000 000$"), (20_000_000, 2, "🌟 ДЖЕКПОТ! 20 000 000$"), (50_000_000, 1, "💎 МЕГА-ДЖЕКПОТ! 50 000 000$")]},
+    "2": {"name": "Золотой кейс", "emoji": "🏆", "price": 15_000_000, "prizes": [(2_000_000, 7, "💸 2 000 000$"), (5_000_000, 8, "💸 5 000 000$"), (9_000_000, 8, "💸 9 000 000$"), (13_000_000, 7, "💸 13 000 000$"), (16_000_000, 14, "✨ 16 000 000$"), (20_000_000, 14, "✨ 20 000 000$"), (28_000_000, 13, "💰 28 000 000$"), (40_000_000, 11, "💰 40 000 000$"), (60_000_000, 8, "🔥 60 000 000$"), (100_000_000, 5, "🔥 100 000 000$"), (200_000_000, 3, "🌟 ДЖЕКПОТ! 200 000 000$"), (500_000_000, 2, "💎 МЕГА-ДЖЕКПОТ! 500 000 000$")]},
+}
+
+# ========== МНОГОСЛОВНЫЕ КОМАНДЫ ==========
+MULTI_WORD_CMDS = {
+    "мой ник": "мойник", "мой статус": "мойстатус", "мой лимит": "мойлимит", "мой брак": "мойбрак",
+    "мой бизнес": "мойбизнес", "мой генератор": "мойгенератор", "мой карьер": "мойкарьер",
+    "мой дом": "мойдом", "мой телефон": "мойтелефон", "мой самолет": "мойсамолет", "мой самолет": "мойсамолет",
+    "мой вертолет": "мойвертолет", "мой вертолет": "мойвертолет", "моя ферма": "мояферма",
+    "моя машина": "моямашина", "моя яхта": "мояяхта", "моё дерево": "моёдерево", "мое дерево": "моёдерево",
+    "мой сад": "мойсад", "моё имущество": "моёимущество", "мое имущество": "моёимущество",
+    "сменить ник": "сменитьник", "поле чудес": "поле чудес","испытать удачу": "испытатьудачу",
+    "сад полить": "садполить", "полить сад": "садполить", "полить дерево": "деревополить",
+    "дерево полить": "деревополить", "ограбить мэрию": "ограбитьмэрию", "ограб мэрию": "ограбитьмэрию",
+    "построить бизнес": "построитьбизнес", "построить генератор": "построитьгенератор",
+    "построить ферму": "построитьферму", "построить карьер": "построитькарьер",
+    "построить участок": "построитьучасток", "построить сад": "построитьсад",
+    "собрать бизнес": "собратьбизнес", "собрать генератор": "собратьгенератор",
+    "собрать ферму": "собратьферму", "собрать карьер": "собратькарьер",
+    "собрать дерево": "собратьдерево", "собрать сад": "собратьсад",
+    "создать зелье": "создатьзелье", "выпить зелье": "использоватьзелье",
+    "использовать зелье": "использоватьзелье", 
+    "денежное дерево": "денежноедерево", "курс руды": "курсруды", "продать рейтинг": "продатьрейтинг",
+    "магический шар": "шар", "мой чат": "беседа", "рп команды": "рпкоманды", "топ баланс": "топ",
+    "купить кейс": "buycase", "открыть кейс": "opencase",
+    "лог модерации": "логи",
+}
+
+# Набор всех допустимых команд
+ALL_CMDS = {
+    "меню","профиль","инфа","info","мойник","myname","сменитьник","setname","ник",
+    "баланс","ббаланс","бб","balance","опыт","exp","уровень","энергия","energy",
+    "мойлимит","лимит","mylimit","рейтинг","репутация","продатьрейтинг","sellrating",
+    "топ","top","бонус","bonus",
+    "банк","депозит","казна","treasury","дать","pay","перевод",
+    "биткоин","btc","bitcoin","биткоины","ограбитьмэрию","ограбмэрию","мэрия",
+    "шахта","mine_info","копать","dig","mine","продать","sellore","курсруды","рудакурс","orerate",
+    "инвентарь","inventory","инв","машины","cars","buycar","телефоны","phones","buyphone",
+    "самолеты","planes","buyplane","яхты","yachts","buyyacht","вертолеты","helicopters","buyhelicopter",
+    "дома","houses","buyhouse","моёимущество","имущество","property","мойдом",
+    "моямашина","мойтелефон","мойсамолет","мойсамолет","мояяхта","мойвертолет","мойвертолет",
+    "shop","магазин","buy","статусы","vipinfo","статус","мойстатус","mystatus",
+    "казино","casino","slots","спин","кубик","dice","баскетбол","basketball",
+    "дартс","darts","боулинг","bowling","трейд","trade","шар","ball","магическийшар",
+    "выбери","choose","выбор","инфо","infо","chance","испытатьудачу","удача","lucky","бизнес","мойбизнес","business",
+    "построитьбизнес","собратьбизнес","collectbusiness","генератор","мойгенератор","generator",
+    "построитьгенератор","собратьгенератор","collectgenerator","ферма","мояферма","farm",
+    "построитьферму","собратьферму","collectfarm","карьер","мойкарьер","quarry","построитькарьер",
+    "собратькарьер","collectquarry","денежноедерево","дерево","моёдерево","tree","построитьучасток",
+    "собратьдерево","collecttree","деревополить","поливатьдерево","watertree","сад","мойсад","garden",
+    "построитьсад","садполить","поливатьсад","watersad","собратьсад","collectgarden","зелья","potions_list",
+    "создатьзелье","brew","крафт","использоватьзелье","usepotions","выпитьзелье","кейсы","cases",
+    "buycase","купитькейс","opencase","открытькейс","свадьба","marry","развод","divorce","мойбрак",
+    "mybride","mymarriage","браки","marriages","рпкоманды","rp","rpcommands","stats","статс","статистика",
+    "help","команды","помощь","промо","promo","промокод","кик","kick","givemoney","варн","warn",
+    "варны","warns","снятьварн","unwarn","мут","mute","размут","unmute","блок","ban","разблок","unban",
+    "cmd","delcmd","cmds","создатьпромо","удалитьпромо","списокпромо","giftvip",
+    "мойбизнес","мойгенератор","мояферма","мойкарьер","моёдерево","мойсад","поле чудес", "полечудес",
+    "логи","modlogs",
+}
+
+# ========== МАГИЧЕСКИЕ ШАР ==========
+BALL_ANSWERS = ["Да, определённо! ✅", "Скорее всего, да 👍", "Без сомнений! 💯", "Знаки говорят — да 🔮", "Можешь рассчитывать на это ⭐", "Не исключено 🤔", "Туманно, спроси позже 🌫", "Лучше не говорить 🤐", "Очень сомнительно ❓", "Нет 🚫", "Определённо нет! ❌", "Шансы невелики 📉", "Не рассчитывай на это 🙅"]
+
+# ========== БИТКОИН (динамическая цена) ==========
+_btc_price = BITCOIN_PRICE_BASE
+_btc_last_update = time.time()
+
+def get_btc_price():
+    global _btc_price, _btc_last_update
+    now = time.time()
+    if now - _btc_last_update > 3600:
+        change = random.uniform(-0.15, 0.20)
+        _btc_price = max(5000, int(_btc_price * (1 + change)))
+        _btc_last_update = now
+    return _btc_price
+
+# ==================== DB ====================
+def load_admin_ids():
+    ids = [1055127323]
+    try:
+        with open(ADMIN_IDS_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line.isdigit() and int(line) not in ids:
+                    ids.append(int(line))
+    except FileNotFoundError:
+        with open(ADMIN_IDS_FILE, 'w', encoding='utf-8') as f:
+            f.write("# Список ID администраторов\n1055127323\n")
+    return ids
+
+def load_custom_cmds():
+    try:
+        with open(CUSTOM_CMDS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_custom_cmds(cmds):
+    with open(CUSTOM_CMDS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(cmds, f, ensure_ascii=False, indent=2)
+
+def init_db():
+    with sqlite3.connect(DB_NAME) as c:
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY,
+            username TEXT,
+            screen_name TEXT,
+            nickname TEXT,
+            balance REAL DEFAULT 50000.0,
+            is_blocked BOOLEAN DEFAULT 0,
+            registration_date TEXT DEFAULT CURRENT_TIMESTAMP,
+            games_played INTEGER DEFAULT 0,
+            last_bonus TEXT,
+            last_daily TEXT,
+            last_work TEXT,
+            last_mine TEXT,
+            last_rob TEXT,
+            last_rob_mayor TEXT,
+            last_exp TEXT,
+            bank REAL DEFAULT 0,
+            deposit REAL DEFAULT 0,
+            last_deposit_collect TEXT,
+            vip BOOLEAN DEFAULT 0,
+            vip_level INTEGER DEFAULT 0,
+            vip_expires TEXT,
+            reputation INTEGER DEFAULT 0,
+            bcoins REAL DEFAULT 0,
+            bitcoins REAL DEFAULT 0,
+            experience INTEGER DEFAULT 0,
+            level INTEGER DEFAULT 1,
+            energy INTEGER DEFAULT 20,
+            last_energy_regen TEXT,
+            cars TEXT DEFAULT '[]',
+            phones TEXT DEFAULT '[]',
+            planes TEXT DEFAULT '[]',
+            yachts TEXT DEFAULT '[]',
+            helicopters TEXT DEFAULT '[]',
+            houses TEXT DEFAULT '[]',
+            ore_coal REAL DEFAULT 0,
+            ore_iron REAL DEFAULT 0,
+            ore_gold REAL DEFAULT 0,
+            ore_diamond REAL DEFAULT 0,
+            business_level INTEGER DEFAULT 0,
+            last_business_collect TEXT,
+            generator_level INTEGER DEFAULT 0,
+            last_generator_collect TEXT,
+            farm_level INTEGER DEFAULT 0,
+            last_farm_collect TEXT,
+            quarry_level INTEGER DEFAULT 0,
+            last_quarry_collect TEXT,
+            tree_level INTEGER DEFAULT 0,
+            last_tree_collect TEXT,
+            tree_last_watered TEXT,
+            garden_level INTEGER DEFAULT 0,
+            last_garden_collect TEXT,
+            garden_last_watered TEXT,
+            potions TEXT DEFAULT '{}',
+            luck_boost_until TEXT,
+            duels_won INTEGER DEFAULT 0,
+            duels_lost INTEGER DEFAULT 0,
+            total_won REAL DEFAULT 0,
+            total_lost REAL DEFAULT 0,
+            total_sent REAL DEFAULT 0,
+            total_received REAL DEFAULT 0,
+            last_pay_date TEXT,
+            day_sent REAL DEFAULT 0,
+            warns INTEGER DEFAULT 0,
+            warn_reasons TEXT DEFAULT '[]',
+            muted_until TEXT,
+            cases_inventory TEXT DEFAULT '{}',
+            married_to INTEGER DEFAULT NULL,
+            married_at TEXT DEFAULT NULL,
+            proposals_in TEXT DEFAULT '[]'
+        );
+        """)
+        new_cols = [
+            ("nickname", "TEXT"), ("last_daily", "TEXT"), ("last_rob_mayor", "TEXT"), ("deposit", "REAL DEFAULT 0"),
+            ("last_deposit_collect", "TEXT"), ("vip_level", "INTEGER DEFAULT 0"), ("energy", "INTEGER DEFAULT 20"),
+            ("last_energy_regen", "TEXT"), ("phones", "TEXT DEFAULT '[]'"), ("planes", "TEXT DEFAULT '[]'"),
+            ("yachts", "TEXT DEFAULT '[]'"), ("helicopters", "TEXT DEFAULT '[]'"), ("houses", "TEXT DEFAULT '[]'"),
+            ("ore_coal", "REAL DEFAULT 0"), ("ore_iron", "REAL DEFAULT 0"), ("ore_gold", "REAL DEFAULT 0"),
+            ("ore_diamond", "REAL DEFAULT 0"), ("business_level", "INTEGER DEFAULT 0"), ("last_business_collect", "TEXT"),
+            ("generator_level", "INTEGER DEFAULT 0"), ("last_generator_collect", "TEXT"), ("farm_level", "INTEGER DEFAULT 0"),
+            ("last_farm_collect", "TEXT"), ("quarry_level", "INTEGER DEFAULT 0"), ("last_quarry_collect", "TEXT"),
+            ("tree_level", "INTEGER DEFAULT 0"), ("last_tree_collect", "TEXT"), ("tree_last_watered", "TEXT"),
+            ("garden_level", "INTEGER DEFAULT 0"), ("last_garden_collect", "TEXT"), ("garden_last_watered", "TEXT"),
+            ("potions", "TEXT DEFAULT '{}'"), ("luck_boost_until", "TEXT"), ("last_pay_date", "TEXT"),
+            ("day_sent", "REAL DEFAULT 0"), ("warns", "INTEGER DEFAULT 0"), ("warn_reasons", "TEXT DEFAULT '[]'"),
+            ("muted_until", "TEXT"), ("cases_inventory", "TEXT DEFAULT '{}'"), ("married_to", "INTEGER DEFAULT NULL"),
+            ("married_at", "TEXT DEFAULT NULL"), ("proposals_in", "TEXT DEFAULT '[]'"), ("used_promos", "TEXT DEFAULT '[]'"),
+            ("last_mine", "TEXT"),
+        ]
+        for col, definition in new_cols:
+            try:
+                c.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
+            except Exception:
+                pass
+        c.execute("""CREATE TABLE IF NOT EXISTS promos (code TEXT PRIMARY KEY, reward REAL NOT NULL, max_uses INTEGER NOT NULL, used_count INTEGER DEFAULT 0, created_at TEXT);""")
+        c.execute("""CREATE TABLE IF NOT EXISTS mod_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            action TEXT NOT NULL,
+            admin_id INTEGER NOT NULL,
+            admin_name TEXT,
+            target_id INTEGER NOT NULL,
+            target_name TEXT,
+            reason TEXT,
+            extra TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );""")
+        c.commit()
+
+def get_user(uid):
+    with sqlite3.connect(DB_NAME) as c:
+        c.row_factory = sqlite3.Row
+        return c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+
+def log_mod_action(action, admin_id, admin_name, target_id, target_name, reason=None, extra=None):
+    with sqlite3.connect(DB_NAME) as c:
+        c.execute(
+            "INSERT INTO mod_logs (action, admin_id, admin_name, target_id, target_name, reason, extra, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            (action, admin_id, admin_name, target_id, target_name, reason, extra, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        )
+        c.commit()
+
+# ==================== ПРОМОКОДЫ ====================
+def promo_create(code, reward, max_uses):
+    with sqlite3.connect(DB_NAME) as c:
+        try:
+            c.execute("INSERT INTO promos (code, reward, max_uses, used_count, created_at) VALUES (?,?,?,0,?)", (code.upper(), float(reward), int(max_uses), datetime.now().isoformat()))
+            c.commit()
+            return True
+        except Exception:
+            return False
+
+def promo_delete(code):
+    with sqlite3.connect(DB_NAME) as c:
+        c.execute("DELETE FROM promos WHERE code=?", (code.upper(),))
+        c.commit()
+
+def promo_get(code):
+    with sqlite3.connect(DB_NAME) as c:
+        c.row_factory = sqlite3.Row
+        return c.execute("SELECT * FROM promos WHERE code=?", (code.upper(),)).fetchone()
+
+def promo_list():
+    with sqlite3.connect(DB_NAME) as c:
+        c.row_factory = sqlite3.Row
+        return c.execute("SELECT * FROM promos ORDER BY created_at DESC").fetchall()
+
+def promo_use(uid, code):
+    code = code.upper()
+    with sqlite3.connect(DB_NAME) as c:
+        c.row_factory = sqlite3.Row
+        promo = c.execute("SELECT * FROM promos WHERE code=?", (code,)).fetchone()
+        if not promo:
+            return None, "❌ Промокод не найден."
+        if promo['used_count'] >= promo['max_uses']:
+            return None, "❌ Промокод уже исчерпан."
+        user = c.execute("SELECT used_promos FROM users WHERE id=?", (uid,)).fetchone()
+        used = json.loads(user['used_promos'] or '[]') if user else []
+        if code in used:
+            return None, "❌ Вы уже использовали этот промокод."
+        used.append(code)
+        c.execute("UPDATE users SET used_promos=? WHERE id=?", (json.dumps(used, ensure_ascii=False), uid))
+        c.execute("UPDATE promos SET used_count=used_count+1 WHERE code=?", (code,))
+        c.commit()
+        return promo['reward'], None
+
+def add_or_update_user(api, uid):
+    try:
+        info = api.users.get(user_ids=uid)
+        name = f"{info[0]['first_name']} {info[0]['last_name']}" if info else f"id{uid}"
+    except:
+        name = f"id{uid}"
+    with sqlite3.connect(DB_NAME) as c:
+        c.execute("INSERT OR IGNORE INTO users(id, username) VALUES(?,?)", (uid, name))
+        c.commit()
+    return name
+
+def db_set(uid, **kwargs):
+    if not kwargs: return
+    sets = ", ".join(f"{k}=?" for k in kwargs)
+    vals = list(kwargs.values()) + [uid]
+    with sqlite3.connect(DB_NAME) as c:
+        c.execute(f"UPDATE users SET {sets} WHERE id=?", vals)
+        c.commit()
+
+def db_inc(uid, **kwargs):
+    if not kwargs: return
+    sets = ", ".join(f"{k}={k}+?" for k in kwargs)
+    vals = list(kwargs.values()) + [uid]
+    with sqlite3.connect(DB_NAME) as c:
+        c.execute(f"UPDATE users SET {sets} WHERE id=?", vals)
+        c.commit()
+
+def update_balance(uid, amount):
+    db_inc(uid, balance=amount)
+    backup_db()
+
+def update_bank(uid, amount):
+    db_inc(uid, bank=amount)
+    backup_db()
+
+def update_deposit(uid, amount):
+    db_inc(uid, deposit=amount)
+    backup_db()
+
+def update_bcoins(uid, amount):
+    db_inc(uid, bcoins=amount)
+    backup_db()
+
+def update_bitcoins(uid, amount):
+    db_inc(uid, bitcoins=amount)
+    backup_db()
+
+def update_reputation(uid, amount):
+    db_inc(uid, reputation=amount)
+    backup_db()
+
+def update_experience(uid, amount, vip_level=0):
+    mult = VIP_LEVELS[vip_level]["exp_mult"]
+    real_amount = int(amount * mult)
+    with sqlite3.connect(DB_NAME) as c:
+        c.execute("UPDATE users SET experience=experience+? WHERE id=?", (real_amount, uid))
+        user = c.execute("SELECT experience, level FROM users WHERE id=?", (uid,)).fetchone()
+        if user:
+            new_level = 1 + (user[0] // 1000)
+            if new_level > user[1]:
+                c.execute("UPDATE users SET level=? WHERE id=?", (new_level, uid))
+        c.commit()
+    backup_db()
+
+def get_vip_level(user):
+    vl = user['vip_level'] if user['vip_level'] else 0
+    if vl > 0 and user['vip_expires']:
+        try:
+            exp = datetime.strptime(user['vip_expires'], "%Y-%m-%d %H:%M:%S")
+            if datetime.now() > exp:
+                with sqlite3.connect(DB_NAME) as c:
+                    c.execute("UPDATE users SET vip=0, vip_level=0, vip_expires=NULL WHERE id=?", (user['id'],))
+                    c.commit()
+                return 0
+        except:
+            pass
+    return vl
+
+# ==================== HELPERS ====================
+def send(api, uid, text, peer_id=None, attachment=None, keyboard=None):
+    target = peer_id if peer_id and peer_id != uid else uid
+    params = {'peer_id': target, 'message': text, 'random_id': get_random_id()}
+    if keyboard:
+        params['keyboard'] = keyboard.get_keyboard()
+    if attachment:
+        try:
+            api.messages.send(**{**params, 'attachment': attachment})
+            return
+        except Exception as e:
+            logger.error(f"Ошибка отправки с фото: {e}")
+    try:
+        api.messages.send(**params)
+    except Exception as e:
+        logger.error(f"Ошибка отправки: {e}")
+
+def extract_id(raw_str):
+    if not raw_str: return None
+    match = re.search(r'\[id(\d+)\|', raw_str)
+    if match: return int(match.group(1))
+    nums = re.findall(r'^\d+$', raw_str.strip())
+    if nums: return int(nums[0])
+    return None
+
+def resolve_user_id(api, raw_str):
+    if not raw_str: return None
+    match = re.search(r'\[id(\d+)\|', raw_str)
+    if match: return int(match.group(1))
+    if raw_str.strip().lstrip('-').isdigit():
+        return int(raw_str.strip())
+    screen_name = raw_str.strip().lstrip('@')
+    try:
+        info = api.users.get(user_ids=screen_name)
+        if info: return info[0]['id']
+    except Exception as e:
+        logger.error(f"Ошибка resolve_user_id({screen_name}): {e}")
+    return None
+
+def get_vk_link(api, uid):
+    try:
+        info = api.users.get(user_ids=uid, fields="screen_name")
+        if info:
+            name = f"{info[0]['first_name']} {info[0]['last_name']}"
+            screen = info[0].get('screen_name') or f"id{uid}"
+            return name, f"vk.com/{screen}"
+    except:
+        pass
+    return f"id{uid}", f"vk.com/id{uid}"
+
+def fmt_big(amount):
+    if amount is None: return "0"
+    amount = float(amount)
+    neg = amount < 0
+    a = abs(amount)
+    if a >= 1e24: s = f"{a/1e24:.2f} ептл"
+    elif a >= 1e21: s = f"{a/1e21:.2f} ктрл"
+    elif a >= 1e18: s = f"{a/1e18:.2f} квнт"
+    elif a >= 1e15: s = f"{a/1e15:.2f} квдрл"
+    elif a >= 1e12: s = f"{a/1e12:.2f} трл"
+    elif a >= 1e9: s = f"{a/1e9:.2f} млрд"
+    elif a >= 1e6: s = f"{a/1e6:.2f} млн"
+    elif a >= 1000: s = f"{int(a):,}".replace(',', ' ')
+    else: s = str(int(a)) if a == int(a) else f"{a:.2f}"
+    return f"-{s}" if neg else s
+
+def fmt_time(td):
+    total_seconds = int(td.total_seconds())
+    if total_seconds < 60: return f"{total_seconds} сек"
+    if total_seconds < 3600:
+        return f"{total_seconds//60} мин {total_seconds%60} сек"
+    return f"{total_seconds//3600} ч {(total_seconds%3600)//60} мин"
+
+def get_display_name(user):
+    if user['nickname']:
+        return user['nickname']
+    return user['username'] or f"id{user['id']}"
+
+def get_ore_col(ore_name):
+    return f"ore_{ore_name}"
+
+def get_user_ore(user, ore_name):
+    col = get_ore_col(ore_name)
+    try: return float(user[col] or 0)
+    except: return 0.0
+
+def has_luck_boost(user):
+    if not user['luck_boost_until']: return False
+    try:
+        until = datetime.strptime(user['luck_boost_until'], "%Y-%m-%d %H:%M:%S")
+        return datetime.now() < until
+    except:
+        return False
+
+def regen_energy(user):
+    vl = get_vip_level(user)
+    max_e = VIP_LEVELS[vl]["max_energy"]
+    current = user['energy'] if user['energy'] is not None else max_e
+    if current >= max_e: return current
+    last = user['last_energy_regen']
+    now = datetime.now()
+    if last:
+        try:
+            elapsed_mins = (now - datetime.strptime(last, "%Y-%m-%d %H:%M:%S")).total_seconds() / 60
+            regen = int(elapsed_mins // 10)
+            if regen > 0:
+                new_e = min(max_e, current + regen)
+                db_set(user['id'], energy=new_e, last_energy_regen=now.strftime("%Y-%m-%d %H:%M:%S"))
+                return new_e
+        except:
+            pass
+    else:
+        db_set(user['id'], last_energy_regen=now.strftime("%Y-%m-%d %H:%M:%S"))
+    return current
+
+# ==================== BONUS ====================
+def can_get_bonus(uid):
+    user = get_user(uid)
+    if not user or not user['last_bonus']: return True, None
+    last = datetime.strptime(user['last_bonus'], "%Y-%m-%d %H:%M:%S")
+    vl = get_vip_level(user)
+    hours = 1.5 if vl >= 1 else 3
+    delta = timedelta(hours=hours)
+    if datetime.now() - last >= delta: return True, None
+    remaining = last + delta - datetime.now()
+    return False, remaining
+
+def set_bonus_time(uid):
+    db_set(uid, last_bonus=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+def can_get_daily(uid):
+    user = get_user(uid)
+    if not user or not user['last_daily']: return True, None
+    last = datetime.strptime(user['last_daily'], "%Y-%m-%d %H:%M:%S")
+    delta = timedelta(hours=24)
+    if datetime.now() - last >= delta: return True, None
+    remaining = last + delta - datetime.now()
+    return False, remaining
+
+# ==================== ИМУЩЕСТВО ====================
+def get_user_items(user, col):
+    try: return json.loads(user[col] or '[]')
+    except: return []
+
+def add_item(uid, col, item_name):
+    user = get_user(uid)
+    items = get_user_items(user, col)
+    if item_name not in items:
+        items.append(item_name)
+        db_set(uid, **{col: json.dumps(items)})
+        return True
+    return False
+
+def get_user_profile(api, user):
+    uid = user['id']
+    vl = get_vip_level(user)
+    vip_info = VIP_LEVELS[vl]
+    exp = user['experience'] or 0
+    level = 1 + (exp // 1000)
+    next_exp = level * 1000
+    status_str = f"{vip_info['emoji']} {vip_info['name']}"
+    nick = get_display_name(user)
+    profile = (f"👤 {nick}\n🎫 ID: {uid}\n🏆 Статус: {status_str}\n💰 Баланс: {fmt_big(user['balance'])}$\n🏛 Банк: {fmt_big(user['bank'])}$\n💵 Депозит: {fmt_big(user['deposit'] or 0)}$\n💳 B-Coins: {fmt_big(user['bcoins'] or 0)}\n📀 Биткоины: {fmt_big(user['bitcoins'] or 0)} BTC\n👑 Рейтинг: {user['reputation'] or 0}\n🌟 Опыт: {exp}/{next_exp} (Уровень {level})\n⚡ Энергия: {user['energy'] or 0}/{vip_info['max_energy']}\n🎲 Игр сыграно: {user['games_played'] or 0}\n📅 Регистрация: {user['registration_date']}\n")
+    return profile
+
+def check_exp_gain(uid):
+    user = get_user(uid)
+    if not user: return
+    last_exp = user['last_exp']
+    now = datetime.now()
+    if last_exp:
+        try:
+            last = datetime.strptime(last_exp, "%Y-%m-%d %H:%M:%S")
+            hours_passed = int((now - last).total_seconds() // 3600)
+            if hours_passed >= 1:
+                vl = get_vip_level(user)
+                update_experience(uid, hours_passed * EXP_PER_HOUR, vl)
+                db_set(uid, last_exp=now.strftime("%Y-%m-%d %H:%M:%S"))
+        except:
+            pass
+    else:
+        db_set(uid, last_exp=now.strftime("%Y-%m-%d %H:%M:%S"))
+
+def collect_building(uid, bkey):
+    user = get_user(uid)
+    bdata = BUSINESSES[bkey]
+    level = user[bdata["col"]] or 0
+    if level == 0:
+        return None, "not_built"
+    col_time = user[bdata["col_time"]]
+    now = datetime.now()
+    if col_time:
+        elapsed = (now - datetime.strptime(col_time, "%Y-%m-%d %H:%M:%S")).total_seconds() / 3600
+    else:
+        elapsed = bdata["cooldown_hours"]
+    if elapsed < bdata["cooldown_hours"]:
+        remaining = timedelta(hours=bdata["cooldown_hours"]) - timedelta(hours=elapsed)
+        return None, remaining
+    db_set(uid, **{bdata["col_time"]: now.strftime("%Y-%m-%d %H:%M:%S")})
+    if "needs_water" in bdata and bdata["needs_water"]:
+        water_col = bdata["water_col"]
+        last_water = user[water_col]
+        if not last_water:
+            return None, "not_watered"
+        elapsed_water = (now - datetime.strptime(last_water, "%Y-%m-%d %H:%M:%S")).total_seconds() / 3600
+        if elapsed_water > 48:
+            return None, "not_watered"
+    if "ore" in bdata:
+        ore = bdata["ore"]
+        ore_col = get_ore_col(ore)
+        db_inc(uid, **{ore_col: bdata["income"]})
+        return ("ore", ore, bdata["income"]), "ok"
+    elif "bitcoin" in bdata:
+        db_inc(uid, bitcoins=bdata["bitcoin"])
+        return ("btc", bdata["bitcoin"]), "ok"
+    else:
+        update_balance(uid, bdata["income"])
+        return ("money", bdata["income"]), "ok"
+
+# ==================== ИГРЫ ====================
+def game_bet_check(user, bet, peer_id, api, uid):
+    if bet <= 0:
+        send(api, uid, "❌ Ставка должна быть больше 0", peer_id)
+        return False
+    if user['balance'] < bet:
+        send(api, uid, f"❌ Недостаточно средств. У вас {fmt_big(user['balance'])}$", peer_id)
+        return False
+    return True
+
+def apply_game_result(uid, bet, won, vip_level=0):
+    bonus = VIP_LEVELS[vip_level]["game_bonus"]
+    if won:
+        win_amount = bet
+        if random.randint(1, 100) <= bonus:
+            win_amount = int(bet * 1.5)
+        update_balance(uid, win_amount)
+        db_inc(uid, games_played=1, total_won=win_amount)
+        return win_amount, True
+    else:
+        update_balance(uid, -bet)
+        db_inc(uid, games_played=1, total_lost=bet)
+        return bet, False
+
+# ==================== HANDLE MESSAGE ====================
+def handle_message(api, event):
+    msg = event.object.get('message', {})
+    uid = msg.get('from_id')
+    if not uid: return
+    text = msg.get('text', '').strip()
+    if not text: return
+    peer_id = msg.get('peer_id')
+    chat_id = None
+    if peer_id and peer_id > 2000000000:
+        chat_id = peer_id - 2000000000
+    has_payload = bool(msg.get('payload'))
+    text_low = text.lower().strip()
+    
+    if peer_id and peer_id != uid and not has_payload:
+        pass
+    
+    user = get_user(uid)
+    if not user:
+        add_or_update_user(api, uid)
+        user = get_user(uid)
+    if user and user['is_blocked']:
+        return
+    if user:
+        check_exp_gain(uid)
+        regen_energy(user)
+        user = get_user(uid)
+    if user and user['muted_until']:
+        try:
+            muted_until = datetime.strptime(user['muted_until'], "%Y-%m-%d %H:%M:%S")
+            if datetime.now() < muted_until:
+                return
+            else:
+                db_set(uid, muted_until=None)
+        except:
+            pass
+    
+    parts = text.split()
+    ADMIN_IDS = load_admin_ids()
+    custom_cmds = load_custom_cmds()
+    
+    raw_cmd = None
+    arg_offset = 1
+    for n_words in (4, 3, 2):
+        if len(parts) >= n_words:
+            phrase = " ".join(w.lower().lstrip('/') for w in parts[:n_words])
+            if phrase in MULTI_WORD_CMDS:
+                raw_cmd = MULTI_WORD_CMDS[phrase]
+                arg_offset = n_words
+                break
+            if phrase in custom_cmds:
+                raw_cmd = custom_cmds[phrase]
+                arg_offset = n_words
+                break
+    if raw_cmd is None:
+        raw_cmd = parts[0].lower().lstrip('/')
+        arg_offset = 1
+        raw_cmd = custom_cmds.get(raw_cmd, raw_cmd)
+    cmd = raw_cmd
+    parts = [cmd] + parts[arg_offset:]
+    if peer_id and peer_id != uid and not text.startswith('/') and not has_payload:
+        if cmd not in ALL_CMDS and uid not in WORDLE_GAME:
+            return
+    vip_level = get_vip_level(user)
+    
+    # ==================== ПОЛЕ ЧУДЕС ====================
+    if cmd in ["поле чудес", "полe чудес", "полечудес"]:
+        if uid in WORDLE_GAME:
+            game = WORDLE_GAME[uid]
+            if "*" not in "".join(game["revealed"]):
+                del WORDLE_GAME[uid]
+            else:
+                kb = VkKeyboard(inline=True)
+                kb.add_callback_button("🔄 Сменить категорию", color=VkKeyboardColor.SECONDARY, payload={"cmd": "wordle_cats"})
+                kb.add_callback_button("🚪 Завершить", color=VkKeyboardColor.NEGATIVE, payload={"cmd": "wordle_end"})
+                display = get_wordle_display(game)
+                wrong_letters = ", ".join(game["wrong_letters"]) if game["wrong_letters"] else "нет"
+                send(api, uid, f"🎯 ПОЛЕ ЧУДЕС\n📚 Категория: {game['category']}\n━━━━━━━━━━━━━━━\n\n📖 Слово: {display}\n\n❌ Неверные буквы: {wrong_letters}\n━━━━━━━━━━━━━━━\n🔤 Отправь букву или слово: слово: [твой вариант]", peer_id, keyboard=kb)
+                return
+        
+        keyboard = VkKeyboard(inline=True)
+        keyboard.add_callback_button("🧑 Человек", color=VkKeyboardColor.PRIMARY, payload={"cmd": "wordle_start", "cat": "человек"})
+        keyboard.add_callback_button("🏠 Быт", color=VkKeyboardColor.PRIMARY, payload={"cmd": "wordle_start", "cat": "быт"})
+        keyboard.add_callback_button("🌍 Мир", color=VkKeyboardColor.PRIMARY, payload={"cmd": "wordle_start", "cat": "мир"})
+        keyboard.add_callback_button("🎮 Развлечения", color=VkKeyboardColor.PRIMARY, payload={"cmd": "wordle_start", "cat": "развлечения"})
+        keyboard.add_callback_button("🎲 Случайное", color=VkKeyboardColor.SECONDARY, payload={"cmd": "wordle_start", "cat": "random"})
+        send(api, uid, "🎲 ПОЛЕ ЧУДЕС 🎲\n━━━━━━━━━━━━━━━\n\nВыберите категорию и угадывайте слово!\n\n🎯 Угадывайте буквы или всё слово целиком.", peer_id, keyboard=keyboard)
+        return
+    
+    if uid in WORDLE_GAME:
+        game = WORDLE_GAME[uid]
+        if "*" not in "".join(game["revealed"]):
+            del WORDLE_GAME[uid]
+            send(api, uid, f"🎉 ПОБЕДА!\n━━━━━━━━━━━━━━━\nСлово: {game['word']}\n\nИгра завершена! 🎊", peer_id)
+            return
+        
+        if len(cmd) == 1 and cmd.isalpha() and cmd not in ["поле чудес", "полe чудес", "полечудес"]:
+            result, message = guess_wordle_letter(uid, cmd)
+            if result is None:
+                send(api, uid, message, peer_id)
+                return
+            if "*" not in "".join(game["revealed"]):
+                send(api, uid, f"{message}\n\n🎉 ПОБЕДА!\nСлово: {game['word']}", peer_id)
+                del WORDLE_GAME[uid]
+                return
+            kb = VkKeyboard(inline=True)
+            kb.add_callback_button("🔄 Сменить категорию", color=VkKeyboardColor.SECONDARY, payload={"cmd": "wordle_cats"})
+            kb.add_callback_button("🚪 Завершить", color=VkKeyboardColor.NEGATIVE, payload={"cmd": "wordle_end"})
+            display = get_wordle_display(game)
+            wrong_letters = ", ".join(game["wrong_letters"]) if game["wrong_letters"] else "нет"
+            send(api, uid, f"🎯 ПОЛЕ ЧУДЕС\n📚 Категория: {game['category']}\n━━━━━━━━━━━━━━━\n\n{message}\n\n📖 Слово: {display}\n\n❌ Неверные буквы: {wrong_letters}\n━━━━━━━━━━━━━━━\n🔤 Отправь букву или слово: слово: [вариант]", peer_id, keyboard=kb)
+            return
+        
+        if cmd.lower().startswith("слово:"):
+            word_guess = cmd[6:].strip()
+            if word_guess:
+                result, message = guess_wordle_word(uid, word_guess)
+                if result is None:
+                    send(api, uid, message, peer_id)
+                    return
+                if "*" not in "".join(game["revealed"]):
+                    send(api, uid, f"{message}\n\n🎉 ПОБЕДА!\nСлово: {game['word']}", peer_id)
+                    del WORDLE_GAME[uid]
+                    return
+                kb = VkKeyboard(inline=True)
+                kb.add_callback_button("🔄 Сменить категорию", color=VkKeyboardColor.SECONDARY, payload={"cmd": "wordle_cats"})
+                kb.add_callback_button("🚪 Завершить", color=VkKeyboardColor.NEGATIVE, payload={"cmd": "wordle_end"})
+                display = get_wordle_display(game)
+                wrong_letters = ", ".join(game["wrong_letters"]) if game["wrong_letters"] else "нет"
+                send(api, uid, f"🎯 ПОЛЕ ЧУДЕС\n📚 Категория: {game['category']}\n━━━━━━━━━━━━━━━\n\n{message}\n\n📖 Слово: {display}\n\n❌ Неверные буквы: {wrong_letters}\n━━━━━━━━━━━━━━━\n🔤 Отправь букву или слово: слово: [вариант]", peer_id, keyboard=kb)
+                return
+    
+    # ==================== МЕНЮ / ПРОФИЛЬ ====================
+    if cmd in ["меню", "профиль", "инфа", "info"]:
+        profile = get_user_profile(api, user)
+        kb = VkKeyboard(inline=True)
+        kb.add_callback_button("📦 Имущество", color=VkKeyboardColor.SECONDARY, payload={"cmd": "menu_tab", "tab": "property", "owner": uid})
+        kb.add_callback_button("🧳 Бизнесы", color=VkKeyboardColor.SECONDARY, payload={"cmd": "menu_tab", "tab": "businesses", "owner": uid})
+        send(api, uid, profile, peer_id, keyboard=kb)
+        return
+    
+    # ==================== МОЙ НИК ====================
+    if cmd in ["мойник", "myname"]:
+        nick = user['nickname'] or user['username'] or f"id{uid}"
+        send(api, uid, f" Ваш ник: {nick}", peer_id)
+        return
+    
+    # ==================== СМЕНИТЬ НИК ====================
+    if cmd in ["сменитьник", "setname", "ник"]:
+        if len(parts) < 2:
+            send(api, uid, "💢 Укажите новый ник.\nПример: сменить ник Крутой Игрок", peer_id)
+            return
+        new_nick = ' '.join(parts[1:])
+        max_len = VIP_LEVELS[vip_level]["max_nick_len"]
+        if len(new_nick) > max_len:
+            send(api, uid, f"❌ Ник слишком длинный. Максимум {max_len} символов для вашего статуса.", peer_id)
+            return
+        if len(new_nick) < 2:
+            send(api, uid, "❌ Ник слишком короткий. Минимум 2 символа.", peer_id)
+            return
+        db_set(uid, nickname=new_nick)
+        send(api, uid, f"✅ Ник изменён на: {new_nick}", peer_id)
+        return
+    
+    # ==================== БАЛАНС ====================
+    if cmd in ["баланс", "ббаланс", "бб", "balance"]:
+        send(api, uid, f"👫 Ник: {user['nickname'] or user['username'] or f'id{uid}'}\n💰 Деньги: {fmt_big(user['balance'])}$\n🏦 Банк: {fmt_big(user['bank'])}$\n💽 Биткоины: {fmt_big(user['bitcoins'] or 0)} BTC\n━━━━━━━━━━━━━━━\n💳 B-Coins: {fmt_big(user['bcoins'] or 0)}\n💵 Депозит: {fmt_big(user['deposit'] or 0)}$\n💎 Всего: {fmt_big(float(user['balance'] or 0) + float(user['bank'] or 0) + float(user['deposit'] or 0))}$", peer_id)
+        return
+    
+    # ==================== ОПЫТ ====================
+    if cmd in ["опыт", "exp", "уровень"]:
+        exp = user['experience'] or 0
+        level = 1 + (exp // 1000)
+        next_exp = level * 1000
+        send(api, uid, f"📈 ОПЫТ И УРОВЕНЬ\n━━━━━━━━━━━━━━━\n🌟 Уровень: {level}\n📊 Опыт: {exp} / {next_exp}\n📈 Прогресс: {int((exp % 1000) / 10)}%\n⏳ Опыт начисляется: +{EXP_PER_HOUR} в час", peer_id)
+        return
+    
+    # ==================== ЭНЕРГИЯ ====================
+    if cmd in ["энергия", "energy"]:
+        vl = vip_level
+        max_e = VIP_LEVELS[vl]["max_energy"]
+        e = user['energy'] or 0
+        send(api, uid, f"⚡ ЭНЕРГИЯ\n━━━━━━━━━━━━━━━\n⚡ Текущая: {e}/{max_e}\n🔋 Восполнение: +1 каждые 10 минут\n⛏ Тратится на: добычу руды (1-3 ед.)", peer_id)
+        return
+    
+    # ==================== МОЙ ЛИМИТ ====================
+    if cmd in ["мойлимит", "лимит", "mylimit"]:
+        MSK = timezone(timedelta(hours=3))
+        msk_today = datetime.now(MSK).strftime("%Y-%m-%d")
+        day_sent = float(user['day_sent'] or 0) if user['last_pay_date'] == msk_today else 0
+        lim = VIP_LEVELS[vip_level]["day_limit"]
+        remaining = max(0, lim - day_sent)
+        send(api, uid, f"💫 МОЙ ЛИМИТ ПЕРЕВОДОВ\n━━━━━━━━━━━━━━━\n📊 Дневной лимит: {fmt_big(lim)}$\n💸 Отправлено сегодня: {fmt_big(day_sent)}$\n✅ Остаток: {fmt_big(remaining)}$\n🔄 Сброс: в 00:00 МСК", peer_id)
+        return
+    
+    # ==================== РЕЙТИНГ ====================
+    if cmd in ["рейтинг", "репутация"]:
+        send(api, uid, f"👑 РЕЙТИНГ\n━━━━━━━━━━━━━━━\n👑 Ваш рейтинг: {user['reputation'] or 0}\n💰 Купить рейтинг: /buy rating [кол-во] (10 000$ за 1)\n💱 Продать рейтинг: /продатьрейтинг [кол-во]", peer_id)
+        return
+    
+    # ==================== ПРОДАТЬ РЕЙТИНГ ====================
+    if cmd in ["продатьрейтинг", "sellrating"]:
+        if len(parts) < 2:
+            send(api, uid, "❌ Формат: /продатьрейтинг [кол-во]", peer_id)
+            return
+        try:
+            amount = int(parts[1])
+            if amount <= 0: raise ValueError
+        except:
+            send(api, uid, "❌ Укажите количество числом больше 0", peer_id)
+            return
+        if (user['reputation'] or 0) < amount:
+            send(api, uid, f"❌ Недостаточно рейтинга. У вас: {user['reputation'] or 0}", peer_id)
+            return
+        earned = amount * RATING_PRICE * 0.8
+        update_reputation(uid, -amount)
+        update_balance(uid, earned)
+        send(api, uid, f"✅ Продано {amount} рейтинга за {fmt_big(earned)}$", peer_id)
+        return
+    
+    # ==================== ТОП ====================
+    if cmd in ["топ", "top"]:
+        sub = parts[1].lower() if len(parts) > 1 else "баланс"
+        if sub in ["рейтинг", "rep", "reputation"]:
+            order = "reputation"
+            col_name = "Рейтинг"
+            emoji = "👑"
+        elif sub in ["опыт", "exp"]:
+            order = "experience"
+            col_name = "Опыт"
+            emoji = "🌟"
+        elif sub in ["биткоин", "btc"]:
+            order = "bitcoins"
+            col_name = "BTC"
+            emoji = "📀"
+        else:
+            order = "balance"
+            col_name = "Баланс"
+            emoji = "💰"
+        with sqlite3.connect(DB_NAME) as c:
+            c.row_factory = sqlite3.Row
+            top = c.execute(f"SELECT username, nickname, {order} FROM users ORDER BY {order} DESC LIMIT 10").fetchall()
+        if not top:
+            send(api, uid, "📊 Топ пока пуст", peer_id)
+            return
+        msg_text = f"🏅 ТОП-10 по {col_name}\n\n"
+        medals = ["🥇", "🥈", "🥉"]
+        for i, u in enumerate(top, 1):
+            medal = medals[i-1] if i <= 3 else f"{i}."
+            name = u['nickname'] or u['username'] or "?"
+            val = u[order] or 0
+            msg_text += f"{medal} {name} — {fmt_big(val)} {emoji}\n"
+        send(api, uid, msg_text, peer_id)
+        return
+    
+    # ==================== БОНУС ====================
+    if cmd in ["бонус", "bonus"]:
+        ok, remaining = can_get_bonus(uid)
+        if not ok:
+            send(api, uid, f"🎁 Бонус будет доступен через: {fmt_time(remaining)}", peer_id)
+            return
+        base = random.randint(50_000, 100_000)
+        mult = VIP_LEVELS[vip_level]["bonus_mult"]
+        bonus = int(base * mult)
+        update_balance(uid, bonus)
+        set_bonus_time(uid)
+        update_experience(uid, 25, vip_level)
+        hours = 1.5 if vip_level >= 1 else 3
+        send(api, uid, f"🎁✨ БОНУС ПОЛУЧЕН! ✨🎁\n\n💰 +{fmt_big(bonus)}$\n🌟 +25 опыта\n\n⏳ Следующий бонус через {hours} ч.", peer_id)
+        return
+    
+    
+    # ==================== БАНК ====================
+    if cmd == "банк":
+        if len(parts) < 2:
+            send(api, uid, f"🏛 БАНК\n━━━━━━━━━━━━━━━\n💰 В банке: {fmt_big(user['bank'])}$\n📈 Процент: {VIP_LEVELS[vip_level]['bank_rate']*100:.0f}% в день\n\n/банк положить [сумма/всё]\n/банк снять [сумма/всё]", peer_id)
+            return
+        action = parts[1].lower()
+        if action == "положить" and len(parts) >= 3:
+            try:
+                amount = user['balance'] if parts[2] == "всё" else float(parts[2].replace(',', '.'))
+                if amount <= 0: raise ValueError
+                if user['balance'] < amount:
+                    send(api, uid, "❌ Недостаточно средств", peer_id)
+                    return
+                update_balance(uid, -amount)
+                update_bank(uid, amount)
+                send(api, uid, f"🏛 Положено {fmt_big(amount)}$ в банк\n💰 Остаток: {fmt_big(user['balance'] - amount)}$", peer_id)
+            except:
+                send(api, uid, "❌ Формат: /банк положить [сумма|всё]", peer_id)
+        elif action == "снять" and len(parts) >= 3:
+            try:
+                amount = user['bank'] if parts[2] == "всё" else float(parts[2].replace(',', '.'))
+                if amount <= 0: raise ValueError
+                if user['bank'] < amount:
+                    send(api, uid, "❌ Недостаточно в банке", peer_id)
+                    return
+                update_balance(uid, amount)
+                update_bank(uid, -amount)
+                send(api, uid, f"🏛 Снято {fmt_big(amount)}$ из банка", peer_id)
+            except:
+                send(api, uid, "❌ Формат: /банк снять [сумма|всё]", peer_id)
+        else:
+            send(api, uid, f"🏛 В банке: {fmt_big(user['bank'])}$\n/банк положить [сумма|всё]\n/банк снять [сумма|всё]", peer_id)
+        return
+    
+    # ==================== ДЕПОЗИТ ====================
+    if cmd == "депозит":
+        rate = VIP_LEVELS[vip_level]["deposit_rate"]
+        tax = VIP_LEVELS[vip_level]["deposit_tax"]
+        if len(parts) < 2:
+            send(api, uid, f"💵 ДЕПОЗИТ\n━━━━━━━━━━━━━━━\n💰 На депозите: {fmt_big(user['deposit'] or 0)}$\n📈 Доходность: {rate*100:.0f}% в день\n💸 Налог при снятии: {tax*100:.1f}%\n\n/депозит положить [сумма|всё]\n/депозит снять [сумма|всё]", peer_id)
+            return
+        action = parts[1].lower()
+        if action == "положить" and len(parts) >= 3:
+            try:
+                amount = user['balance'] if parts[2] == "всё" else float(parts[2].replace(',', '.'))
+                if amount <= 0: raise ValueError
+                if user['balance'] < amount:
+                    send(api, uid, "❌ Недостаточно средств", peer_id)
+                    return
+                update_balance(uid, -amount)
+                update_deposit(uid, amount)
+                send(api, uid, f"💵 Положено {fmt_big(amount)}$ на депозит\n📈 Доходность: {rate*100:.0f}%/день", peer_id)
+            except:
+                send(api, uid, "❌ Формат: /депозит положить [сумма|всё]", peer_id)
+        elif action == "снять" and len(parts) >= 3:
+            try:
+                dep = float(user['deposit'] or 0)
+                amount = dep if parts[2] == "всё" else float(parts[2].replace(',', '.'))
+                if amount <= 0: raise ValueError
+                if dep < amount:
+                    send(api, uid, "❌ Недостаточно на депозите", peer_id)
+                    return
+                tax_amount = amount * tax
+                net = amount - tax_amount
+                update_deposit(uid, -amount)
+                update_balance(uid, net)
+                send(api, uid, f"💵 Снято {fmt_big(amount)}$\n💸 Налог: {fmt_big(tax_amount)}$\n✅ Получено: {fmt_big(net)}$", peer_id)
+            except:
+                send(api, uid, "❌ Формат: /депозит снять [сумма|всё]", peer_id)
+        return
+    
+    # ==================== КАЗНА ====================
+    if cmd in ["казна", "treasury"]:
+        with sqlite3.connect(DB_NAME) as c:
+            total_bal = c.execute("SELECT SUM(balance) FROM users").fetchone()[0] or 0
+            total_bank = c.execute("SELECT SUM(bank) FROM users").fetchone()[0] or 0
+            total_dep = c.execute("SELECT SUM(deposit) FROM users").fetchone()[0] or 0
+            total_btc = c.execute("SELECT SUM(bitcoins) FROM users").fetchone()[0] or 0
+            total_players = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        send(api, uid, f"💷 КАЗНА БОТА\n━━━━━━━━━━━━━━━\n👥 Игроков: {total_players}\n💰 Наличных: {fmt_big(total_bal)}$\n🏛 В банках: {fmt_big(total_bank)}$\n💵 На депозитах: {fmt_big(total_dep)}$\n📀 Биткоинов: {fmt_big(total_btc)} BTC\n━━━━━━━━━━━━━━━\n💎 Всего: {fmt_big(total_bal + total_bank + total_dep)}$", peer_id)
+        return
+    
+    # ==================== ДАТЬ (перевод) ====================
+    if cmd in ["дать", "pay", "перевод"]:
+        if len(parts) < 3:
+            send(api, uid, "🤝 Формат: дать @durov [сумма]", peer_id)
+            return
+        try:
+            target_id = resolve_user_id(api, parts[1])
+            amount = float(parts[2].replace(',', '.'))
+        except:
+            send(api, uid, "❌ Формат: дать @durov [сумма]", peer_id)
+            return
+        if not target_id:
+            send(api, uid, "❌ Пользователь не найден.", peer_id)
+            return
+        if target_id == uid:
+            send(api, uid, "❌ Нельзя переводить самому себе.", peer_id)
+            return
+        if amount <= 0:
+            send(api, uid, "❌ Сумма должна быть больше 0.", peer_id)
+            return
+        DAY_LIMIT = VIP_LEVELS[vip_level]["day_limit"]
+        MSK = timezone(timedelta(hours=3))
+        msk_today = datetime.now(MSK).strftime("%Y-%m-%d")
+        day_sent = float(user['day_sent'] or 0) if user['last_pay_date'] == msk_today else 0
+        if user['balance'] < amount:
+            send(api, uid, f"❌ Недостаточно средств. У вас {fmt_big(user['balance'])}$", peer_id)
+            return
+        remaining_limit = DAY_LIMIT - day_sent
+        if amount > remaining_limit:
+            send(api, uid, f"❌ Превышен дневной лимит!\n💸 Остаток: {fmt_big(remaining_limit)}$", peer_id)
+            return
+        target_user = get_user(target_id)
+        if not target_user:
+            add_or_update_user(api, target_id)
+            target_user = get_user(target_id)
+        update_balance(uid, -amount)
+        update_balance(target_id, amount)
+        with sqlite3.connect(DB_NAME) as c:
+            c.execute("UPDATE users SET total_sent=total_sent+?, last_pay_date=?, day_sent=? WHERE id=?", (amount, msk_today, day_sent + amount, uid))
+            c.execute("UPDATE users SET total_received=total_received+? WHERE id=?", (amount, target_id))
+            c.commit()
+        tname, _ = get_vk_link(api, target_id)
+        mention = f"[id{target_id}|{tname}]"
+        send(api, uid, f"✅ Вы передали {fmt_big(amount)}$ игроку {mention}", peer_id)
+        return
+    
+    # ==================== БИТКОИН ====================
+    if cmd in ["биткоин", "btc", "bitcoin", "биткоины"]:
+        btc_price = get_btc_price()
+        if len(parts) < 2 or cmd == "биткоины":
+            send(api, uid, f"🌐 БИТКОИН\n━━━━━━━━━━━━━━━\n📈 Курс: {fmt_big(btc_price)}$ за 1 BTC\n📀 У вас: {fmt_big(user['bitcoins'] or 0)} BTC\n💰 Стоимость: {fmt_big(float(user['bitcoins'] or 0) * btc_price)}$\n\n/биткоин купить [кол-во]\n/биткоин продать [кол-во]", peer_id)
+            return
+        action = parts[1].lower()
+        if action == "курс":
+            send(api, uid, f"📈 Курс биткоина: {fmt_big(btc_price)}$ за 1 BTC", peer_id)
+        elif action in ["купить", "buy"] and len(parts) >= 3:
+            try:
+                amount = float(parts[2].replace(',', '.'))
+                if amount <= 0: raise ValueError
+                cost = amount * btc_price
+                if user['balance'] < cost:
+                    send(api, uid, f"❌ Недостаточно средств. Нужно {fmt_big(cost)}$", peer_id)
+                    return
+                update_balance(uid, -cost)
+                update_bitcoins(uid, amount)
+                send(api, uid, f"✅ Куплено {amount} BTC за {fmt_big(cost)}$", peer_id)
+            except:
+                send(api, uid, "❌ Формат: /биткоин купить [кол-во]", peer_id)
+        elif action in ["продать", "sell"] and len(parts) >= 3:
+            try:
+                amount = float(user['bitcoins'] or 0) if parts[2] == "всё" else float(parts[2].replace(',', '.'))
+                if amount <= 0: raise ValueError
+                if float(user['bitcoins'] or 0) < amount:
+                    send(api, uid, f"❌ Недостаточно BTC. У вас: {fmt_big(user['bitcoins'] or 0)}", peer_id)
+                    return
+                earned = amount * btc_price
+                update_bitcoins(uid, -amount)
+                update_balance(uid, earned)
+                send(api, uid, f"✅ Продано {amount} BTC за {fmt_big(earned)}$", peer_id)
+            except:
+                send(api, uid, "❌ Формат: /биткоин продать [кол-во|всё]", peer_id)
+        else:
+            send(api, uid, f"📈 Курс биткоина: {fmt_big(btc_price)}$ за 1 BTC", peer_id)
+        return
+    
+    # ==================== ОГРАБИТЬ МЭРИЮ ====================
+    if cmd in ["ограбитьмэрию", "ограбмэрию", "мэрия"]:
+        now = datetime.now()
+        if user['last_rob_mayor']:
+            try:
+                last = datetime.strptime(user['last_rob_mayor'], "%Y-%m-%d %H:%M:%S")
+                diff = now - last
+                if diff < timedelta(minutes=30):
+                    remaining = timedelta(minutes=30) - diff
+                    send(api, uid, f"🏢 Полиция усилила охрану. Ждите: {fmt_time(remaining)}", peer_id)
+                    return
+            except:
+                pass
+        db_set(uid, last_rob_mayor=now.strftime("%Y-%m-%d %H:%M:%S"))
+        luck = has_luck_boost(user)
+        success_chance = 45 if luck else 35
+        if random.randint(1, 100) <= success_chance:
+            win = random.randint(500_000, 5_000_000)
+            update_balance(uid, win)
+            update_experience(uid, 50, vip_level)
+            send(api, uid, f"🏢 ОГРАБЛЕНИЕ МЭРИИ!\n━━━━━━━━━━━━━━━\n✅ Успешно! Вы взломали сейф!\n💰 Добыча: {fmt_big(win)}$\n🌟 +50 опыта", peer_id)
+        else:
+            fine = random.randint(50_000, 200_000)
+            fine = min(fine, float(user['balance'] or 0))
+            update_balance(uid, -fine)
+            send(api, uid, f"🏢 ОГРАБЛЕНИЕ МЭРИИ!\n━━━━━━━━━━━━━━━\n❌ Провал! Вас поймала полиция!\n💸 Штраф: {fmt_big(fine)}$", peer_id)
+        return
+    
+    # ==================== ШАХТА ====================
+    if cmd in ["шахта", "mine_info"]:
+        user = get_user(uid)
+        coal = get_user_ore(user, "уголь")
+        iron = get_user_ore(user, "железо")
+        gold_ore = get_user_ore(user, "золото")
+        diamond = get_user_ore(user, "алмаз")
+        e = user['energy'] or 0
+        send(api, uid, f"⛏ ШАХТА\n━━━━━━━━━━━━━━━\n⚡ Энергия: {e}/{VIP_LEVELS[vip_level]['max_energy']}\n\n🪨 Уголь: {fmt_big(coal)} ед.\n⚙️ Железо: {fmt_big(iron)} ед.\n🥇 Золото: {fmt_big(gold_ore)} ед.\n💎 Алмаз: {fmt_big(diamond)} ед.\n\n⛏ Копать: /копать\n💰 Продать: /продать [руда] [кол-во|всё]\n📊 Курс: /курсруды", peer_id)
+        return
+    
+    # ==================== КОПАТЬ ====================
+    if cmd in ["копать", "dig", "mine"]:
+        user = get_user(uid)
+        e = user['energy'] or 0
+        energy_cost = random.randint(1, 3)
+        if e < energy_cost:
+            send(api, uid, f"⚡ Недостаточно энергии! У вас {e}, нужно {energy_cost}.\nОтдохните или выпейте зелье энергии.", peer_id)
+            return
+        luck = has_luck_boost(user)
+        mine_mult = VIP_LEVELS[vip_level]["mine_mult"]
+        roll = random.randint(1, 100)
+        if luck: roll = max(roll, random.randint(1, 100))
+        ore_name = None
+        ore_amount = 0
+        if roll <= 5:
+            ore_name = "алмаз"
+            ore_amount = random.randint(1, 3)
+        elif roll <= 20:
+            ore_name = "золото"
+            ore_amount = random.randint(2, 8)
+        elif roll <= 50:
+            ore_name = "железо"
+            ore_amount = random.randint(5, 15)
+        else:
+            ore_name = "уголь"
+            ore_amount = random.randint(10, 30)
+        ore_amount = int(ore_amount * mine_mult)
+        ore_col = get_ore_col(ore_name)
+        db_inc(uid, **{ore_col: ore_amount})
+        db_set(uid, energy=e - energy_cost, last_mine=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        update_experience(uid, 15, vip_level)
+        ore_emoji = ORE_TYPES[ore_name]["emoji"]
+        send(api, uid, f"⛏ ДОБЫЧА\n━━━━━━━━━━━━━━━\n{ore_emoji} {ore_name.capitalize()}: +{ore_amount} ед.\n⚡ Потрачено энергии: {energy_cost}\n⚡ Осталось энергии: {e - energy_cost}/{VIP_LEVELS[vip_level]['max_energy']}", peer_id)
+        return
+    
+    # ==================== ПРОДАТЬ РУДУ ====================
+    if cmd in ["продать", "sellore"]:
+        if len(parts) < 2:
+            lines = "\n".join(f"/продать {n} [кол-во|всё]" for n in ORE_TYPES)
+            send(api, uid, f"💰 ПРОДАЖА РУДЫ\n━━━━━━━━━━━━━━━\n{lines}", peer_id)
+            return
+        ore_name = parts[1].lower()
+        if ore_name not in ORE_TYPES:
+            send(api, uid, f"❌ Руда не найдена. Доступно: {', '.join(ORE_TYPES.keys())}", peer_id)
+            return
+        user = get_user(uid)
+        ore_col = get_ore_col(ore_name)
+        owned = get_user_ore(user, ore_name)
+        if owned <= 0:
+            send(api, uid, f"❌ У вас нет {ore_name}.", peer_id)
+            return
+        amount_str = parts[2].lower() if len(parts) >= 3 else "всё"
+        if amount_str == "всё":
+            amount = owned
+        else:
+            try:
+                amount = float(amount_str)
+                if amount <= 0: raise ValueError
+                if amount > owned:
+                    send(api, uid, f"❌ Недостаточно руды. У вас: {fmt_big(owned)}", peer_id)
+                    return
+            except:
+                send(api, uid, "❌ Укажите количество или 'всё'", peer_id)
+                return
+        price = ORE_TYPES[ore_name]["base_price"]
+        earned = amount * price
+        db_inc(uid, **{ore_col: -amount})
+        update_balance(uid, earned)
+        ore_emoji = ORE_TYPES[ore_name]["emoji"]
+        send(api, uid, f"💰 ПРОДАЖА РУДЫ\n━━━━━━━━━━━━━━━\n{ore_emoji} {ore_name.capitalize()}: {fmt_big(amount)} ед.\n💵 Получено: {fmt_big(earned)}$", peer_id)
+        return
+    
+    # ==================== КУРС РУДЫ ====================
+    if cmd in ["курсруды", "рудакурс", "orerate"]:
+        text = "📊 КУРС РУДЫ\n━━━━━━━━━━━━━━━\n"
+        for name, data in ORE_TYPES.items():
+            text += f"{data['emoji']} {name.capitalize()}: {fmt_big(data['base_price'])}$ за ед.\n"
+        send(api, uid, text, peer_id)
+        return
+    
+    # ==================== ИНВЕНТАРЬ ====================
+    if cmd in ["инвентарь", "inventory", "инв"]:
+        user = get_user(uid)
+        coal = get_user_ore(user, "уголь")
+        iron = get_user_ore(user, "железо")
+        gold_ore = get_user_ore(user, "золото")
+        diamond = get_user_ore(user, "алмаз")
+        try:
+            potions = json.loads(user['potions'] or '{}')
+        except:
+            potions = {}
+        try:
+            cases_inv = json.loads(user['cases_inventory'] or '{}')
+        except:
+            cases_inv = {}
+        text = (f"📦 ИНВЕНТАРЬ\n━━━━━━━━━━━━━━━\n⛏ РУДА:\n  🪨 Уголь: {fmt_big(coal)} ед.\n  ⚙️ Железо: {fmt_big(iron)} ед.\n  🥇 Золото: {fmt_big(gold_ore)} ед.\n  💎 Алмаз: {fmt_big(diamond)} ед.\n━━━━━━━━━━━━━━━\n🔮 ЗЕЛЬЯ:\n")
+        if potions:
+            for k, v in potions.items():
+                if v > 0 and k in POTIONS:
+                    text += f"  {POTIONS[k]['emoji']} {POTIONS[k]['name']}: {v} шт.\n"
+        else:
+            text += "  Зелий нет\n"
+        text += f"━━━━━━━━━━━━━━━\n🎁 КЕЙСЫ:\n"
+        if cases_inv:
+            for k, v in cases_inv.items():
+                if v > 0 and k in CASES:
+                    text += f"  {CASES[k]['emoji']} {CASES[k]['name']}: {v} шт.\n"
+        else:
+            text += "  Кейсов нет\n"
+        send(api, uid, text, peer_id)
+        return
+    
+    # ==================== МАШИНЫ ====================
+    if cmd in ["машины", "cars"]:
+        text = "🚗 ДОСТУПНЫЕ МАШИНЫ 🚗\n\n"
+        for key, car in CARS.items():
+            text += f"{key}. {car['emoji']} {car['name']} — {fmt_big(car['price'])}$\n"
+        text += "\nКупить: /buycar [номер]"
+        send(api, uid, text, peer_id)
+        return
+    
+    if cmd == "buycar" and len(parts) >= 2:
+        return _buy_property(api, uid, user, peer_id, parts[1], "cars", CARS, "машина", "buycar")
+    
+    # ==================== ТЕЛЕФОНЫ ====================
+    if cmd in ["телефоны", "phones"]:
+        text = "📱 ДОСТУПНЫЕ ТЕЛЕФОНЫ 📱\n\n"
+        for key, p in PHONES.items():
+            text += f"{key}. {p['emoji']} {p['name']} — {fmt_big(p['price'])}$\n"
+        text += "\nКупить: /buyphone [номер]"
+        send(api, uid, text, peer_id)
+        return
+    
+    if cmd == "buyphone" and len(parts) >= 2:
+        return _buy_property(api, uid, user, peer_id, parts[1], "phones", PHONES, "телефон", "buyphone")
+    
+    # ==================== САМОЛЁТЫ ====================
+    if cmd in ["самолеты", "planes"]:
+        text = "✈ ДОСТУПНЫЕ САМОЛЁТЫ ✈\n\n"
+        for key, p in PLANES.items():
+            text += f"{key}. {p['emoji']} {p['name']} — {fmt_big(p['price'])}$\n"
+        text += "\nКупить: /buyplane [номер]"
+        send(api, uid, text, peer_id)
+        return
+    
+    if cmd == "buyplane" and len(parts) >= 2:
+        return _buy_property(api, uid, user, peer_id, parts[1], "planes", PLANES, "самолет", "buyplane")
+    
+    # ==================== ЯХТЫ ====================
+    if cmd in ["яхты", "yachts"]:
+        text = "🛥 ДОСТУПНЫЕ ЯХТЫ 🛥\n\n"
+        for key, p in YACHTS.items():
+            text += f"{key}. {p['emoji']} {p['name']} — {fmt_big(p['price'])}$\n"
+        text += "\nКупить: /buyyacht [номер]"
+        send(api, uid, text, peer_id)
+        return
+    
+    if cmd == "buyyacht" and len(parts) >= 2:
+        return _buy_property(api, uid, user, peer_id, parts[1], "yachts", YACHTS, "яхта", "buyyacht")
+    
+    # ==================== ВЕРТОЛЁТЫ ====================
+    if cmd in ["вертолеты", "helicopters"]:
+        text = "🚁 ДОСТУПНЫЕ ВЕРТОЛЁТЫ 🚁\n\n"
+        for key, p in HELICOPTERS.items():
+            text += f"{key}. {p['emoji']} {p['name']} — {fmt_big(p['price'])}$\n"
+        text += "\nКупить: /buyhelicopter [номер]"
+        send(api, uid, text, peer_id)
+        return
+    
+    if cmd == "buyhelicopter" and len(parts) >= 2:
+        return _buy_property(api, uid, user, peer_id, parts[1], "helicopters", HELICOPTERS, "вертолет", "buyhelicopter")
+    
+    # ==================== ДОМА ====================
+    if cmd in ["дома", "houses"]:
+        text = "🏠 ДОСТУПНЫЕ ДОМА 🏠\n\n"
+        for key, p in HOUSES.items():
+            text += f"{key}. {p['emoji']} {p['name']} — {fmt_big(p['price'])}$\n"
+        text += "\nКупить: /buyhouse [номер]"
+        send(api, uid, text, peer_id)
+        return
+    
+    if cmd == "buyhouse" and len(parts) >= 2:
+        return _buy_property(api, uid, user, peer_id, parts[1], "houses", HOUSES, "дом", "buyhouse")
+    
+    # ==================== МОЁ ИМУЩЕСТВО ====================
+    if cmd in ["моёимущество", "имущество", "property"]:
+        user = get_user(uid)
+        text = "🏘 МОЁ ИМУЩЕСТВО 🏘\n━━━━━━━━━━━━━━━\n"
+        prop_map = [("cars", CARS, "🚗 Машины"), ("phones", PHONES, "📱 Телефоны"), ("planes", PLANES, "✈ Самолеты"), ("yachts", YACHTS, "🛥 Яхты"), ("helicopters", HELICOPTERS, "🚁 Вертолеты"), ("houses", HOUSES, "🏠 Дома")]
+        has_any = False
+        for col, catalog, label in prop_map:
+            items = get_user_items(user, col)
+            if items:
+                has_any = True
+                text += f"\n{label}:\n"
+                for item_name in items:
+                    for k, v in catalog.items():
+                        if v['name'].lower() == item_name.lower():
+                            text += f"  {v['emoji']} {item_name}\n"
+                            break
+        if not has_any:
+            text += "\nУ вас ещё нет имущества."
+        send(api, uid, text, peer_id)
+        return
+    
+    # Алиасы отдельных видов имущества
+    if cmd in ["мояmашина", "мояmашина", "мойдом", "моятелефон", "мойсамолет", "мояяхта", "мойвертолет", "моя машина", "мой дом", "мой телефон", "мой самолет", "моя яхта", "мой вертолет"]:
+        return handle_message_shortcut_property(api, uid, user, peer_id, cmd)
+    
+    # ==================== МОЙ ДОМ / МАШИНА / ЭТС ====================
+    if cmd in ["мойдом"]:
+        _show_single_property(api, uid, user, peer_id, "houses", HOUSES, "🏠 МОЙ ДОМ")
+        return
+    if cmd in ["мояmашина", "моямашина"]:
+        _show_single_property(api, uid, user, peer_id, "cars", CARS, "🚗 МОЯ МАШИНА")
+        return
+    if cmd in ["мойтелефон"]:
+        _show_single_property(api, uid, user, peer_id, "phones", PHONES, "📱 МОЙ ТЕЛЕФОН")
+        return
+    if cmd in ["мойсамолет", "мойсамолет"]:
+        _show_single_property(api, uid, user, peer_id, "planes", PLANES, "✈ МОЙ САМОЛЁТ")
+        return
+    if cmd in ["мояяхта"]:
+        _show_single_property(api, uid, user, peer_id, "yachts", YACHTS, "🛥 МОЯ ЯХТА")
+        return
+    if cmd in ["мойвертолет", "мойвертолет"]:
+        _show_single_property(api, uid, user, peer_id, "helicopters", HELICOPTERS, "🚁 МОЙ ВЕРТОЛЁТ")
+        return
+    
+    # ==================== МАГАЗИН ====================
+    if cmd in ["shop", "магазин"]:
+        send(api, uid, "🛒 МАГАЗИН 🛒\n━━━━━━━━━━━━━━━\n1️⃣ B-Coins — 1 000$ за 1 B-Coin\n2️⃣ Биткоин — по курсу\n3️⃣ Рейтинг — 10 000$ за 1 рейтинг\n━━━━━━━━━━━━━━━\n👑 VIP СТАТУСЫ:\n1️⃣ Standard VIP — 100 000$ (30 дней)\n2️⃣ Gold VIP — 1 000 000$ (30 дней)\n3️⃣ Platinum VIP — 10 000 000$ (30 дней)\n━━━━━━━━━━━━━━━\n/buy [bcoin|btc|rating|vip1|vip2|vip3] [кол-во]", peer_id)
+        return
+    
+    if cmd == "buy" and len(parts) >= 2:
+        item = parts[1].lower()
+        amount = 1
+        if len(parts) >= 3:
+            try:
+                amount = int(parts[2])
+                if amount <= 0: raise ValueError
+            except:
+                send(api, uid, "❌ Укажите количество числом больше 0", peer_id)
+                return
+        if item == "bcoin":
+            cost = 1000 * amount
+            if user['balance'] >= cost:
+                update_balance(uid, -cost)
+                update_bcoins(uid, amount)
+                send(api, uid, f"✅ Куплено {amount} B-Coins за {fmt_big(cost)}$", peer_id)
+            else:
+                send(api, uid, f"❌ Нужно {fmt_big(cost)}$", peer_id)
+        elif item in ["btc", "bitcoin", "биткоин"]:
+            btc_price = get_btc_price()
+            cost = btc_price * amount
+            if user['balance'] >= cost:
+                update_balance(uid, -cost)
+                update_bitcoins(uid, amount)
+                send(api, uid, f"✅ Куплено {amount} BTC за {fmt_big(cost)}$", peer_id)
+            else:
+                send(api, uid, f"❌ Нужно {fmt_big(cost)}$", peer_id)
+        elif item in ["rating", "rep", "рейтинг"]:
+            cost = RATING_PRICE * amount
+            if user['balance'] >= cost:
+                update_balance(uid, -cost)
+                update_reputation(uid, amount)
+                send(api, uid, f"✅ Куплено {amount} рейтинга за {fmt_big(cost)}$", peer_id)
+            else:
+                send(api, uid, f"❌ Нужно {fmt_big(cost)}$", peer_id)
+        elif item in ["vip1", "vip2", "vip3"]:
+            vip_map = {"vip1": 1, "vip2": 2, "vip3": 3}
+            new_vl = vip_map[item]
+            vip_data = VIP_LEVELS[new_vl]
+            if vip_level >= new_vl:
+                send(api, uid, f"❌ У вас уже есть {vip_data['name']} или выше.", peer_id)
+                return
+            price = vip_data["price"]
+            if user['balance'] < price:
+                send(api, uid, f"❌ Нужно {fmt_big(price)}$. У вас {fmt_big(user['balance'])}$", peer_id)
+                return
+            expires = datetime.now() + timedelta(days=30)
+            update_balance(uid, -price)
+            db_set(uid, vip=1, vip_level=new_vl, vip_expires=expires.strftime("%Y-%m-%d %H:%M:%S"))
+            send(api, uid, f"✅ {vip_data['emoji']} {vip_data['name']} активирован на 30 дней!\n💰 Стоимость: {fmt_big(price)}$", peer_id)
+        else:
+            send(api, uid, "❌ Товар не найден. /магазин — список товаров", peer_id)
+        return
+    
+    # ==================== СТАТУСЫ ====================
+    if cmd in ["статусы", "vipinfo", "статус"]:
+        text = "🔱 ДОСТУПНЫЕ СТАТУСЫ 🔱\n━━━━━━━━━━━━━━━\n"
+        for lvl in range(1, 4):
+            v = VIP_LEVELS[lvl]
+            text += (f"\n{v['emoji']} {v['name']} — {fmt_big(v['price'])}$\n  📈 Депозит: {v['deposit_rate']*100:.0f}%\n  💸 Налог депозита: {v['deposit_tax']*100:.1f}%\n  ⚡ Энергия: до {v['max_energy']}\n  📦 Кейсов: до {v['max_cases']}\n  💫 Лимит переводов: {fmt_big(v['day_limit'])}$/день\n  🎁 Бонус ×{v['bonus_mult']}\n")
+        text += "━━━━━━━━━━━━━━━\nКупить: /buy vip1|vip2|vip3"
+        send(api, uid, text, peer_id)
+        return
+    
+    # ==================== МОЙ СТАТУС ====================
+    if cmd in ["мойстатус", "mystatus"]:
+        vl = vip_level
+        v = VIP_LEVELS[vl]
+        expires_str = ""
+        if vl > 0 and user['vip_expires']:
+            try:
+                exp = datetime.strptime(user['vip_expires'], "%Y-%m-%d %H:%M:%S")
+                days_left = (exp - datetime.now()).days
+                expires_str = f"\n📅 Истекает через: {days_left} дн."
+            except:
+                pass
+        send(api, uid, f"🏆 МОЙ СТАТУС\n━━━━━━━━━━━━━━━\n{v['emoji']} {v['name']}{expires_str}\n\n📈 Банковский процент: {v['bank_rate']*100:.0f}%\n💵 Депозит: {v['deposit_rate']*100:.0f}%\n💸 Налог депозита: {v['deposit_tax']*100:.1f}%\n⚡ Макс. энергия: {v['max_energy']}\n📦 Макс. кейсов: {v['max_cases']}\n💫 Лимит переводов: {fmt_big(v['day_limit'])}$/день\n🎁 Множитель бонуса: ×{v['bonus_mult']}\n🎮 Бонус к играм: +{v['game_bonus']}% шанс", peer_id)
+        return
+    
+    # ==================== КАЗИНО ====================
+    if cmd in ["казино", "casino", "slots", "спин"]:
+        if len(parts) < 2:
+            send(api, uid, "🎰 Формат: /казино [ставка]", peer_id)
+            return
+        try:
+            bet = float(parts[1].replace(',', '.'))
+        except:
+            send(api, uid, "❌ Укажите ставку числом", peer_id)
+            return
+        if not game_bet_check(user, bet, peer_id, api, uid): return
+        symbols = ["🍒", "🍋", "🍊", "🍇", "🔔", "⭐", "7️⃣"]
+        res = [random.choice(symbols) for _ in range(3)]
+        bonus_chance = VIP_LEVELS[vip_level]["game_bonus"]
+        _pname, _plink = get_vk_link(api, uid)
+        _mention = f"[{_plink.replace('vk.com/', 'https://vk.com/')}|{_pname}]"
+        if res[0] == res[1] == res[2]:
+            mult = round(random.uniform(3.0, 5.0), 2)
+            win = bet * mult
+            update_balance(uid, win - bet)
+            db_inc(uid, games_played=1, total_won=win)
+            update_experience(uid, 30, vip_level)
+            send(api, uid, f"🎰 {res[0]} | {res[1]} | {res[2]}\n{_mention}, вы выиграли {fmt_big(win)}$ (×{mult}) 🤑", peer_id)
+        elif res[0] == res[1] or res[1] == res[2] or res[0] == res[2]:
+            mult = round(random.uniform(1.5, 2.5), 2)
+            win = bet * mult
+            update_balance(uid, win - bet)
+            db_inc(uid, games_played=1, total_won=win)
+            update_experience(uid, 10, vip_level)
+            send(api, uid, f"🎰 {res[0]} | {res[1]} | {res[2]}\n{_mention}, вы выиграли {fmt_big(win)}$ (×{mult}) 🤑", peer_id)
+        else:
+            update_balance(uid, -bet)
+            db_inc(uid, games_played=1, total_lost=bet)
+            update_experience(uid, 5, vip_level)
+            send(api, uid, f"🎰 {res[0]} | {res[1]} | {res[2]}\n{_mention}, вы проиграли {fmt_big(bet)}$ 😢", peer_id)
+        return
+    
+    # ==================== КУБИК ====================
+    if cmd in ["кубик", "dice"]:
+        if len(parts) < 3:
+            send(api, uid, "🎲 Формат: /кубик [число 1-6] [ставка]", peer_id)
+            return
+        try:
+            guess = int(parts[1])
+            bet = float(parts[2].replace(',', '.'))
+            if guess < 1 or guess > 6: raise ValueError
+        except:
+            send(api, uid, "❌ Формат: /кубик [число 1-6] [ставка]", peer_id)
+            return
+        if not game_bet_check(user, bet, peer_id, api, uid): return
+        roll = random.randint(1, 6)
+        dice_emojis = ["", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣"]
+        won = roll == guess
+        if won:
+            win = bet * 5
+            update_balance(uid, win - bet)
+            db_inc(uid, games_played=1, total_won=win)
+            update_experience(uid, 20, vip_level)
+            send(api, uid, f"🎲 Выпало: {dice_emojis[roll]}\n✅ Угадали! Выигрыш: {fmt_big(win)}$ (×5)", peer_id)
+        else:
+            update_balance(uid, -bet)
+            db_inc(uid, games_played=1, total_lost=bet)
+            send(api, uid, f"🎲 Выпало: {dice_emojis[roll]}\n❌ Не угадали! -{fmt_big(bet)}$", peer_id)
+        return
+    
+    # ==================== БАСКЕТБОЛ ====================
+    if cmd in ["баскетбол", "basketball"]:
+        if len(parts) < 2:
+            send(api, uid, "🏀 Формат: /баскетбол [ставка]", peer_id)
+            return
+        try:
+            bet = float(parts[1].replace(',', '.'))
+        except:
+            send(api, uid, "❌ Укажите ставку числом", peer_id)
+            return
+        if not game_bet_check(user, bet, peer_id, api, uid): return
+        bonus_chance = VIP_LEVELS[vip_level]["game_bonus"]
+        chance = 45 + bonus_chance + (10 if has_luck_boost(user) else 0)
+        won = random.randint(1, 100) <= chance
+        if won:
+            win = bet * 2
+            update_balance(uid, win - bet)
+            db_inc(uid, games_played=1, total_won=win)
+            update_experience(uid, 15, vip_level)
+            send(api, uid, f"🏀 Бросок!\n✅ ГОЛ! 🎉\n💰 Выигрыш: {fmt_big(win)}$", peer_id)
+        else:
+            update_balance(uid, -bet)
+            db_inc(uid, games_played=1, total_lost=bet)
+            send(api, uid, f"🏀 Бросок!\n❌ Промах!\n💸 -{fmt_big(bet)}$", peer_id)
+        return
+    
+    # ==================== ДАРТС ====================
+    if cmd in ["дартс", "darts"]:
+        if len(parts) < 2:
+            send(api, uid, "🎯 Формат: /дартс [ставка]", peer_id)
+            return
+        try:
+            bet = float(parts[1].replace(',', '.'))
+        except:
+            send(api, uid, "❌ Укажите ставку числом", peer_id)
+            return
+        if not game_bet_check(user, bet, peer_id, api, uid): return
+        zones = [(5, 3.0, "🎯 Булл-ай! ×3"), (20, 2.0, "🎯 Хорошее попадание! ×2"), (40, 1.5, "🎯 Попадание! ×1.5"), (35, 0, "🎯 Промах!")]
+        bonus_chance = VIP_LEVELS[vip_level]["game_bonus"]
+        weights = [z[0] + (bonus_chance // 3 if i < 3 else 0) for i, z in enumerate(zones)]
+        idx = random.choices(range(4), weights=weights, k=1)[0]
+        _, mult, label = zones[idx]
+        if mult > 0:
+            win = bet * mult
+            update_balance(uid, win - bet)
+            db_inc(uid, games_played=1, total_won=win)
+            update_experience(uid, 15, vip_level)
+            send(api, uid, f"{label}\n💰 Выигрыш: {fmt_big(win)}$", peer_id)
+        else:
+            update_balance(uid, -bet)
+            db_inc(uid, games_played=1, total_lost=bet)
+            send(api, uid, f"{label}\n💸 -{fmt_big(bet)}$", peer_id)
+        return
+    
+    # ==================== БОУЛИНГ ====================
+    if cmd in ["боулинг", "bowling"]:
+        if len(parts) < 2:
+            send(api, uid, "🎳 Формат: /боулинг [ставка]", peer_id)
+            return
+        try:
+            bet = float(parts[1].replace(',', '.'))
+        except:
+            send(api, uid, "❌ Укажите ставку числом", peer_id)
+            return
+        if not game_bet_check(user, bet, peer_id, api, uid): return
+        bonus_chance = VIP_LEVELS[vip_level]["game_bonus"]
+        pins = random.randint(0, 10 + bonus_chance // 5)
+        pins = min(10, pins)
+        if pins == 10:
+            win = bet * 3
+            update_balance(uid, win - bet)
+            db_inc(uid, games_played=1, total_won=win)
+            update_experience(uid, 25, vip_level)
+            send(api, uid, f"🎳 Страйк! 10/10 кеглей!\n💰 Выигрыш: {fmt_big(win)}$ (×3)", peer_id)
+        elif pins >= 7:
+            win = bet * 1.5
+            update_balance(uid, win - bet)
+            db_inc(uid, games_played=1, total_won=win)
+            update_experience(uid, 10, vip_level)
+            send(api, uid, f"🎳 {pins}/10 кеглей!\n✨ Неплохо! Выигрыш: {fmt_big(win)}$ (×1.5)", peer_id)
+        else:
+            update_balance(uid, -bet)
+            db_inc(uid, games_played=1, total_lost=bet)
+            send(api, uid, f"🎳 {pins}/10 кеглей!\n❌ Недостаточно!\n💸 -{fmt_big(bet)}$", peer_id)
+        return
+    
+    # ==================== ТРЕЙД ====================
+    if cmd in ["трейд", "trade"]:
+        if len(parts) < 3:
+            send(api, uid, "📉 Формат: /трейд [вверх|вниз] [ставка]", peer_id)
+            return
+        direction = parts[1].lower()
+        if direction not in ["вверх", "вниз", "up", "down"]:
+            send(api, uid, "❌ Укажите направление: вверх или вниз", peer_id)
+            return
+        try:
+            bet = float(parts[2].replace(',', '.'))
+        except:
+            send(api, uid, "❌ Укажите ставку числом", peer_id)
+            return
+        if not game_bet_check(user, bet, peer_id, api, uid): return
+        change = random.uniform(-15, 15)
+        actual_up = change > 0
+        guessed_up = direction in ["вверх", "up"]
+        won = actual_up == guessed_up
+        arrow = "📈" if actual_up else "📉"
+        if won:
+            win = bet * 1.9
+            update_balance(uid, win - bet)
+            db_inc(uid, games_played=1, total_won=win)
+            update_experience(uid, 15, vip_level)
+            send(api, uid, f"📊 Рынок: {arrow} {abs(change):.1f}%\n✅ Угадали! Выигрыш: {fmt_big(win)}$", peer_id)
+        else:
+            update_balance(uid, -bet)
+            db_inc(uid, games_played=1, total_lost=bet)
+            send(api, uid, f"📊 Рынок: {arrow} {abs(change):.1f}%\n❌ Не угадали!\n💸 -{fmt_big(bet)}$", peer_id)
+        return
+    
+    # ==================== РАЗВЛЕЧЕНИЯ ====================
+    if cmd in ["шар", "ball", "магическийшар"]:
+        if len(parts) < 2:
+            send(api, uid, "🔮 Задайте вопрос: /шар [вопрос]", peer_id)
+            return
+        question = ' '.join(parts[1:])
+        answer = random.choice(BALL_ANSWERS)
+        send(api, uid, f"🔮 МАГИЧЕСКИЙ ШАР 🔮\n━━━━━━━━━━━━━━━\n❓ {question}\n\n{answer}", peer_id)
+        return
+    
+    if cmd in ["выбери", "choose", "выбор"]:
+        raw = ' '.join(parts[1:])
+        if " или " in raw:
+            opts = [x.strip() for x in raw.split(" или ")]
+        elif "|" in raw:
+            opts = [x.strip() for x in raw.split("|")]
+        else:
+            send(api, uid, "💬 Формат: /выбери [вариант1] или [вариант2]", peer_id)
+            return
+        if len(opts) < 2:
+            send(api, uid, "💬 Укажите минимум 2 варианта", peer_id)
+            return
+        choice = random.choice(opts)
+        send(api, uid, f"💬 Мой выбор:\n\n✅ {choice}", peer_id)
+        return
+    
+    if cmd in ["инфо", "infо", "chance"]:
+        if len(parts) < 2:
+            send(api, uid, "📊 Формат: /инфо [фраза]", peer_id)
+            return
+        phrase = ' '.join(parts[1:])
+        seed = sum(ord(c) for c in phrase.lower()) + uid
+        random.seed(seed)
+        pct = random.randint(0, 100)
+        random.seed()
+        bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
+        send(api, uid, f"📊 {phrase}\n\n[{bar}] {pct}%", peer_id)
+        return
+    
+    if cmd in ["испытатьудачу", "удача", "lucky"]:
+        luck = has_luck_boost(user)
+        chance = 15 if luck else 10
+        if random.randint(1, 100) <= chance:
+            win = random.randint(10_000, 1_000_000)
+            update_balance(uid, win)
+            update_experience(uid, 20, vip_level)
+            send(api, uid, f"🍀 УДАЧА!\n\n✨ Вам повезло!\n💰 Найдено: {fmt_big(win)}$", peer_id)
+        else:
+            send(api, uid, f"🍀 ИСПЫТАНИЕ УДАЧИ\n\nУдача не улыбнулась... Попробуйте ещё раз!", peer_id)
+        return
+    
+    # ==================== БИЗНЕС ====================
+    if cmd in ["бизнес", "мойбизнес", "business"]:
+        user = get_user(uid)
+        level = user['business_level'] or 0
+        bdata = BUSINESSES["business"]
+        if level == 0:
+            send(api, uid, f"{bdata['name']}\n━━━━━━━━━━━━━━━\n❌ Бизнес не построен\n💰 Стоимость: {fmt_big(bdata['price'])}$\n📈 Доход: {fmt_big(bdata['income'])}$ каждые {bdata['cooldown_hours']} ч.\n\n/построитьбизнес", peer_id)
+        else:
+            _show_building_status(api, uid, peer_id, "business", user)
+        return
+    
+    if cmd == "построитьбизнес":
+        _build_building(api, uid, user, peer_id, "business")
+        return
+    
+    if cmd in ["собратьбизнес", "collectbusiness"]:
+        _collect_building(api, uid, peer_id, "business")
+        return
+    
+    # ==================== ГЕНЕРАТОР ====================
+    if cmd in ["генератор", "мойгенератор", "generator"]:
+        user = get_user(uid)
+        level = user['generator_level'] or 0
+        bdata = BUSINESSES["generator"]
+        if level == 0:
+            send(api, uid, f"{bdata['name']}\n━━━━━━━━━━━━━━━\n❌ Генератор не построен\n💰 Стоимость: {fmt_big(bdata['price'])}$\n⛏ Доход: {bdata['income']} руды/уголь каждые {bdata['cooldown_hours']} ч.\n\n/построитьгенератор", peer_id)
+        else:
+            _show_building_status(api, uid, peer_id, "generator", user)
+        return
+    
+    if cmd == "построитьгенератор":
+        _build_building(api, uid, user, peer_id, "generator")
+        return
+    
+    if cmd in ["собратьгенератор", "collectgenerator"]:
+        _collect_building(api, uid, peer_id, "generator")
+        return
+    
+    # ==================== ФЕРМА ====================
+    if cmd in ["ферма", "мояферма", "farm"]:
+        user = get_user(uid)
+        level = user['farm_level'] or 0
+        bdata = BUSINESSES["farm"]
+        if level == 0:
+            send(api, uid, f"{bdata['name']}\n━━━━━━━━━━━━━━━\n❌ Майнинг ферма не построена\n💰 Стоимость: {fmt_big(bdata['price'])}$\n📀 Доход: {bdata['bitcoin']} BTC каждые {bdata['cooldown_hours']} ч.\n\n/построитьферму", peer_id)
+        else:
+            _show_building_status(api, uid, peer_id, "farm", user)
+        return
+    
+    if cmd == "построитьферму":
+        _build_building(api, uid, user, peer_id, "farm")
+        return
+    
+    if cmd in ["собратьферму", "collectfarm"]:
+        _collect_building(api, uid, peer_id, "farm")
+        return
+    
+    # ==================== КАРЬЕР ====================
+    if cmd in ["карьер", "мойкарьер", "quarry"]:
+        user = get_user(uid)
+        level = user['quarry_level'] or 0
+        bdata = BUSINESSES["quarry"]
+        if level == 0:
+            send(api, uid, f"{bdata['name']}\n━━━━━━━━━━━━━━━\n❌ Карьер не построен\n💰 Стоимость: {fmt_big(bdata['price'])}$\n⛏ Доход: {bdata['income']} железа каждые {bdata['cooldown_hours']} ч.\n\n/построитькарьер", peer_id)
+        else:
+            _show_building_status(api, uid, peer_id, "quarry", user)
+        return
+    
+    if cmd == "построитькарьер":
+        _build_building(api, uid, user, peer_id, "quarry")
+        return
+    
+    if cmd in ["собратькарьер", "collectquarry"]:
+        _collect_building(api, uid, peer_id, "quarry")
+        return
+    
+    # ==================== ДЕНЕЖНОЕ ДЕРЕВО ====================
+    if cmd in ["денежноедерево", "дерево", "моёдерево", "tree"]:
+        user = get_user(uid)
+        level = user['tree_level'] or 0
+        bdata = BUSINESSES["tree"]
+        if level == 0:
+            send(api, uid, f"{bdata['name']}\n━━━━━━━━━━━━━━━\n❌ Участок не построен\n💰 Стоимость: {fmt_big(bdata['price'])}$\n🌳 Доход: {fmt_big(bdata['income'])}$ каждые {bdata['cooldown_hours']} ч.\n💧 Требует полива каждые 48 ч.\n\n/построитьучасток", peer_id)
+        else:
+            _show_building_status(api, uid, peer_id, "tree", user)
+        return
+    
+    if cmd == "построитьучасток":
+        _build_building(api, uid, user, peer_id, "tree")
+        return
+    
+    if cmd in ["собратьдерево", "collecttree"]:
+        _collect_building(api, uid, peer_id, "tree")
+        return
+    
+    # ==================== САД ====================
+    if cmd in ["сад", "мойсад", "garden"]:
+        user = get_user(uid)
+        level = user['garden_level'] or 0
+        bdata = BUSINESSES["garden"]
+        if level == 0:
+            send(api, uid, f"{bdata['name']}\n━━━━━━━━━━━━━━━\n❌ Сад не построен\n💰 Стоимость: {fmt_big(bdata['price'])}$\n🌳 Доход: {fmt_big(bdata['income'])}$ каждые {bdata['cooldown_hours']} ч.\n💧 Требует полива каждые 48 ч.\n\n/построитьсад", peer_id)
+        else:
+            _show_building_status(api, uid, peer_id, "garden", user)
+        return
+    
+    if cmd == "построитьсад":
+        _build_building(api, uid, user, peer_id, "garden")
+        return
+    
+    if cmd in ["садполить", "поливатьсад", "watersad"]:
+        user = get_user(uid)
+        if not user['garden_level']:
+            send(api, uid, "❌ Сад не построен. /построитьсад", peer_id)
+            return
+        db_set(uid, garden_last_watered=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        send(api, uid, "💦 Сад полит! 🌱 Урожай будет хорошим!", peer_id)
+        return
+    
+    if cmd in ["деревополить", "поливатьдерево", "watertree"]:
+        user = get_user(uid)
+        if not user['tree_level']:
+            send(api, uid, "❌ Участок не построен. /построитьучасток", peer_id)
+            return
+        db_set(uid, tree_last_watered=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        send(api, uid, "💦 Дерево полито! 🌳 Будет хороший урожай!", peer_id)
+        return
+    
+    if cmd in ["собратьсад", "collectgarden"]:
+        _collect_building(api, uid, peer_id, "garden")
+        return
+    
+    # ==================== ЗЕЛЬЯ ====================
+    if cmd in ["зелья", "potions_list"]:
+        text = "🍸 ЗЕЛЬЯ\n━━━━━━━━━━━━━━━\n"
+        for k, p in POTIONS.items():
+            cost_str = ", ".join(f"{fmt_big(v)} {n}" for n, v in p['cost_ore'].items())
+            text += f"{k}. {p['emoji']} {p['name']}\n   Стоимость: {cost_str}\n"
+        text += "━━━━━━━━━━━━━━━\nСоздать: /создатьзелье [номер]"
+        send(api, uid, text, peer_id)
+        return
+    
+    if cmd in ["создатьзелье", "brew", "крафт"]:
+        if len(parts) < 2:
+            send(api, uid, "❌ Формат: /создатьзелье [номер]\n/зелья — список", peer_id)
+            return
+        pnum = parts[1]
+        if pnum not in POTIONS:
+            send(api, uid, f"❌ Зелье не найдено. Доступно: {', '.join(POTIONS.keys())}", peer_id)
+            return
+        potion = POTIONS[pnum]
+        user = get_user(uid)
+        for ore_name, cost in potion['cost_ore'].items():
+            if get_user_ore(user, ore_name) < cost:
+                ore_emoji = ORE_TYPES[ore_name]["emoji"]
+                send(api, uid, f"❌ Недостаточно {ore_name}! Нужно {cost} {ore_emoji}, у вас {get_user_ore(user, ore_name):.0f}", peer_id)
+                return
+        for ore_name, cost in potion['cost_ore'].items():
+            db_inc(uid, **{get_ore_col(ore_name): -cost})
+        try:
+            potions_inv = json.loads(user['potions'] or '{}')
+        except:
+            potions_inv = {}
+        potions_inv[pnum] = potions_inv.get(pnum, 0) + 1
+        db_set(uid, potions=json.dumps(potions_inv))
+        send(api, uid, f"✅ Создано: {potion['emoji']} {potion['name']}\n📦 В инвентаре: {potions_inv[pnum]} шт.", peer_id)
+        return
+    
+    if cmd in ["использоватьзелье", "usepotions", "выпитьзелье"]:
+        if len(parts) < 2:
+            send(api, uid, "❌ Формат: /использоватьзелье [номер]", peer_id)
+            return
+        pnum = parts[1]
+        if pnum not in POTIONS:
+            send(api, uid, "❌ Зелье не найдено.", peer_id)
+            return
+        user = get_user(uid)
+        try:
+            potions_inv = json.loads(user['potions'] or '{}')
+        except:
+            potions_inv = {}
+        if potions_inv.get(pnum, 0) <= 0:
+            send(api, uid, f"❌ У вас нет {POTIONS[pnum]['name']}. /создатьзелье {pnum}", peer_id)
+            return
+        potion = POTIONS[pnum]
+        potions_inv[pnum] -= 1
+        if potions_inv[pnum] == 0: del potions_inv[pnum]
+        db_set(uid, potions=json.dumps(potions_inv))
+        if potion['effect'] == 'exp':
+            update_experience(uid, potion['value'], vip_level)
+            send(api, uid, f"🔮 Выпито {potion['name']}\n🌟 +{potion['value']} опыта!", peer_id)
+        elif potion['effect'] == 'energy':
+            max_e = VIP_LEVELS[vip_level]['max_energy']
+            new_e = min(max_e, (user['energy'] or 0) + potion['value'])
+            db_set(uid, energy=new_e)
+            send(api, uid, f"⚡ Выпито {potion['name']}\n⚡ Энергия восстановлена: {new_e}/{max_e}", peer_id)
+        elif potion['effect'] == 'luck':
+            until = datetime.now() + timedelta(minutes=potion['value'])
+            db_set(uid, luck_boost_until=until.strftime("%Y-%m-%d %H:%M:%S"))
+            send(api, uid, f"🍀 Выпито {potion['name']}\n🍀 Удача активна на {potion['value']} минут!", peer_id)
+        return
+    
+    # ==================== КЕЙСЫ ====================
+    if cmd in ["кейсы", "cases"]:
+        user = get_user(uid)
+        try:
+            inv = json.loads(user['cases_inventory'] or '{}')
+        except:
+            inv = {}
+        max_cases = VIP_LEVELS[vip_level]['max_cases']
+        text = f"🎰 КЕЙСЫ\n━━━━━━━━━━━━━━━\n📦 Макс. открыть за раз: {max_cases}\n\n"
+        for key, case in CASES.items():
+            owned = inv.get(key, 0)
+            text += f"{case['emoji']} {key}. {case['name']} — {fmt_big(case['price'])}$"
+            if owned: text += f" (у вас: {owned} шт.)"
+            text += "\n"
+        text += "━━━━━━━━━━━━━━━\n📦 Купить: /buycase [1/2] [кол-во]\n🔓 Открыть: /opencase [1/2] [кол-во]"
+        send(api, uid, text, peer_id)
+        return
+    
+    if cmd in ["buycase", "купитькейс"]:
+        if len(parts) < 2:
+            send(api, uid, "❌ Формат: /buycase [1/2] [кол-во]", peer_id)
+            return
+        case_num = parts[1]
+        if case_num not in CASES:
+            send(api, uid, "❌ Кейс не найден. /кейсы", peer_id)
+            return
+        count = 1
+        if len(parts) >= 3:
+            try:
+                count = int(parts[2])
+                if count <= 0: raise ValueError
+            except:
+                send(api, uid, "❌ Укажите количество числом", peer_id)
+                return
+        if count > 100:
+            send(api, uid, "❌ Максимум 100 за раз", peer_id)
+            return
+        case = CASES[case_num]
+        total_cost = case['price'] * count
+        if user['balance'] < total_cost:
+            send(api, uid, f"❌ Нужно {fmt_big(total_cost)}$. У вас {fmt_big(user['balance'])}$", peer_id)
+            return
+        update_balance(uid, -total_cost)
+        try:
+            inv = json.loads(user['cases_inventory'] or '{}')
+        except:
+            inv = {}
+        inv[case_num] = inv.get(case_num, 0) + count
+        db_set(uid, cases_inventory=json.dumps(inv))
+        send(api, uid, f"✅ Куплено {count} шт. «{case['name']}» за {fmt_big(total_cost)}$\n📦 В инвентаре: {inv[case_num]} шт.", peer_id)
+        return
+    
+    if cmd in ["opencase", "открытькейс"]:
+        if len(parts) < 2:
+            send(api, uid, "❌ Формат: /opencase [1/2] [кол-во]", peer_id)
+            return
+        case_num = parts[1]
+        if case_num not in CASES:
+            send(api, uid, "❌ Кейс не найден.", peer_id)
+            return
+        try:
+            inv = json.loads(user['cases_inventory'] or '{}')
+        except:
+            inv = {}
+        owned = inv.get(case_num, 0)
+        if owned <= 0:
+            send(api, uid, f"❌ У вас нет «{CASES[case_num]['name']}». /buycase {case_num} [кол-во]", peer_id)
+            return
+        max_open = VIP_LEVELS[vip_level]['max_cases']
+        count = 1
+        if len(parts) >= 3:
+            try:
+                count = int(parts[2])
+                if count <= 0: raise ValueError
+            except:
+                send(api, uid, "❌ Укажите количество числом", peer_id)
+                return
+        count = min(count, owned, max_open)
+        case = CASES[case_num]
+        prizes = case['prizes']
+        amounts = [p[0] for p in prizes]
+        weights = [p[1] for p in prizes]
+        total_won = 0
+        results = []
+        for _ in range(count):
+            won = random.choices(amounts, weights=weights, k=1)[0]
+            total_won += won
+            results.append(won)
+        inv[case_num] = owned - count
+        if inv[case_num] == 0: del inv[case_num]
+        update_balance(uid, total_won)
+        update_experience(uid, 20 * count, vip_level)
+        db_set(uid, cases_inventory=json.dumps(inv))
+        if count == 1:
+            msg_text = f"{case['emoji']} Кейс #{case_num}\n💰 Выигрыш: {fmt_big(total_won)}$"
+        else:
+            best = max(results)
+            msg_text = f"{case['emoji']} Открыто {count} кейсов #{case_num}\n💰 Итого выиграно: {fmt_big(total_won)}$\n🏆 Лучший выигрыш: {fmt_big(best)}$"
+        remaining = inv.get(case_num, 0)
+        if remaining: msg_text += f"\n📦 Осталось: {remaining} шт."
+        send(api, uid, msg_text, peer_id)
+        return
+    
+    # ==================== БРАКИ ====================
+    if cmd in ["свадьба", "marry"]:
+        if len(parts) < 2:
+            send(api, uid, "💌 Формат: свадьба @durov", peer_id)
+            return
+        target_id = resolve_user_id(api, parts[1])
+        if not target_id:
+            send(api, uid, "❌ Пользователь не найден.", peer_id)
+            return
+        if target_id == uid:
+            send(api, uid, "😂 Нельзя жениться на себе.", peer_id)
+            return
+        if user['married_to']:
+            send(api, uid, f"❌ Вы уже в браке. Разведитесь сначала: развод @durov", peer_id)
+            return
+        target_user = get_user(target_id)
+        if not target_user:
+            add_or_update_user(api, target_id)
+            target_user = get_user(target_id)
+        if target_user['married_to']:
+            send(api, uid, f"❌ {target_user['username']} уже в браке.", peer_id)
+            return
+        try:
+            my_proposals = json.loads(user['proposals_in'] or '[]')
+        except:
+            my_proposals = []
+        if target_id in my_proposals:
+            send(api, uid, "⏳ Вы уже отправили предложение этому игроку.", peer_id)
+            return
+        try:
+            target_proposals = json.loads(target_user['proposals_in'] or '[]')
+        except:
+            target_proposals = []
+        target_proposals.append(uid)
+        my_proposals.append(target_id)
+        with sqlite3.connect(DB_NAME) as c:
+            c.execute("UPDATE users SET proposals_in=? WHERE id=?", (json.dumps(target_proposals), target_id))
+            c.execute("UPDATE users SET proposals_in=? WHERE id=?", (json.dumps(my_proposals), uid))
+            c.commit()
+        my_name, _ = get_vk_link(api, uid)
+        tname = target_user['nickname'] or target_user['username'] or f"id{target_id}"
+        kb = VkKeyboard(inline=True)
+        kb.add_callback_button("💍 Принять", color=VkKeyboardColor.POSITIVE, payload={"cmd": "marry_accept", "from": uid, "to": target_id})
+        kb.add_callback_button("❌ Отказать", color=VkKeyboardColor.NEGATIVE, payload={"cmd": "marry_decline", "from": uid, "to": target_id})
+        send(api, uid, f"💌 {my_name} делает предложение {tname}!\n━━━━━━━━━━━━━━━\n@id{target_id} ({tname}), вы хотите вступить в брак?", peer_id, keyboard=kb)
+        return
+    
+    if cmd in ["развод", "divorce"]:
+        if not user['married_to']:
+            send(api, uid, "❌ Вы не состоите в браке.", peer_id)
+            return
+        if len(parts) < 2:
+            send(api, uid, "💔 Формат: развод @durov", peer_id)
+            return
+        target_id = resolve_user_id(api, parts[1])
+        if not target_id or target_id != user['married_to']:
+            send(api, uid, "❌ Вы не в браке с этим человеком.", peer_id)
+            return
+        my_name, _ = get_vk_link(api, uid)
+        their_name, _ = get_vk_link(api, target_id)
+        with sqlite3.connect(DB_NAME) as c:
+            c.execute("UPDATE users SET married_to=NULL, married_at=NULL WHERE id IN (?,?)", (uid, target_id))
+            c.commit()
+        send(api, uid, f"💔 РАЗВОД\n━━━━━━━━━━━━━━━\n{my_name} и {their_name} больше не в браке.", peer_id)
+        return
+    
+    if cmd in ["мойбрак", "mybride", "mymarriage"]:
+        if not user['married_to']:
+            send(api, uid, "💔 Вы не в браке.\nПредложить: свадьба @durov", peer_id)
+            return
+        partner = get_user(user['married_to'])
+        partner_name = (partner['nickname'] or partner['username']) if partner else f"id{user['married_to']}"
+        married_at = user['married_at']
+        days = 0
+        if married_at:
+            try:
+                dt = datetime.strptime(married_at, "%Y-%m-%d %H:%M:%S")
+                days = (datetime.now() - dt).days
+            except:
+                pass
+        send(api, uid, f"💒 МОЙ БРАК\n━━━━━━━━━━━━━━━\n💍 Партнёр: {partner_name}\n📅 В браке: {days} дн.", peer_id)
+        return
+    
+    if cmd in ["браки", "marriages"]:
+        with sqlite3.connect(DB_NAME) as c:
+            c.row_factory = sqlite3.Row
+            pairs = c.execute("SELECT u1.username as n1, u1.nickname as nn1, u2.username as n2, u2.nickname as nn2, u1.married_at as since FROM users u1 JOIN users u2 ON u1.married_to=u2.id WHERE u1.married_to IS NOT NULL AND u1.id < u1.married_to ORDER BY u1.married_at ASC").fetchall()
+        if not pairs:
+            send(api, uid, "💒 Пар в браке пока нет.", peer_id)
+            return
+        text = "💒 БРАКИ\n━━━━━━━━━━━━━━━\n"
+        for i, p in enumerate(pairs, 1):
+            n1 = p['nn1'] or p['n1'] or "?"
+            n2 = p['nn2'] or p['n2'] or "?"
+            days = 0
+            if p['since']:
+                try:
+                    dt = datetime.strptime(p['since'], "%Y-%m-%d %H:%M:%S")
+                    days = (datetime.now() - dt).days
+                except:
+                    pass
+            text += f"{i}. 💍 {n1} & {n2} — {days} дн.\n"
+        send(api, uid, text, peer_id)
+        return
+    
+    # ==================== РП КОМАНДЫ ====================
+    if cmd in ["рпкоманды", "rp", "rpcommands"]:
+        send(api, uid, "⚖ РП КОМАНДЫ\n━━━━━━━━━━━━━━━\n/шар [вопрос] — магический шар\n/выбери [вариант] или [вариант2] — выбор\n/инфо [фраза] — шанс события в %\n/испытатьудачу — испытать удачу", peer_id)
+        return
+    
+    # ==================== СТАТИСТИКА ====================
+    if cmd in ["stats", "статс", "статистика"]:
+        with sqlite3.connect(DB_NAME) as c:
+            c.row_factory = sqlite3.Row
+            total_users = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            active_users = c.execute("SELECT COUNT(*) FROM users WHERE is_blocked=0").fetchone()[0]
+            banned_users = c.execute("SELECT COUNT(*) FROM users WHERE is_blocked=1").fetchone()[0]
+            total_balance = c.execute("SELECT SUM(balance) FROM users").fetchone()[0] or 0
+            total_bank = c.execute("SELECT SUM(bank) FROM users").fetchone()[0] or 0
+            total_games = c.execute("SELECT SUM(games_played) FROM users").fetchone()[0] or 0
+            vip_count = c.execute("SELECT COUNT(*) FROM users WHERE vip_level>0").fetchone()[0]
+            richest = c.execute("SELECT username, nickname, balance FROM users ORDER BY balance DESC LIMIT 1").fetchone()
+        rich_str = f"{richest['nickname'] or richest['username']} ({fmt_big(richest['balance'])}$)" if richest else "—"
+        send(api, uid, f"📊 СТАТИСТИКА БОТА 📊\n━━━━━━━━━━━━━━━\n👥 Всего игроков: {total_users}\n✅ Активных: {active_users}\n🔨 Забанено: {banned_users}\n👑 VIP: {vip_count}\n━━━━━━━━━━━━━━━\n💰 Наличных: {fmt_big(total_balance)}$\n🏛 В банках: {fmt_big(total_bank)}$\n🎰 Игр сыграно: {total_games}\n━━━━━━━━━━━━━━━\n🏆 Богатейший: {rich_str}", peer_id)
+        return
+    
+    # ==================== ПОМОЩЬ ====================
+    if cmd in ["help", "команды", "помощь"]:
+        kb = VkKeyboard(inline=True)
+        kb.add_callback_button("1️⃣ Основное", color=VkKeyboardColor.PRIMARY, payload={"cmd": "help_cat", "cat": "main", "owner": uid})
+        kb.add_callback_button("2️⃣ Игры", color=VkKeyboardColor.POSITIVE, payload={"cmd": "help_cat", "cat": "games", "owner": uid})
+        kb.add_callback_button("3️⃣ Развлечения", color=VkKeyboardColor.SECONDARY, payload={"cmd": "help_cat", "cat": "fun", "owner": uid})
+        _help_nick = user['nickname'] or user['username'] or f"id{uid}"
+        send(api, uid, f"🎮 {_help_nick}, выберите категорию:\n\n1️⃣ Основное\n2️⃣ Игры\n3️⃣ Развлекательное", peer_id, keyboard=kb)
+        return
+    
+    # ==================== ADMIN COMMANDS ====================
+    if cmd in ["кик", "kick"]:
+        if not chat_id:
+            send(api, uid, "❌ Только в беседах.", peer_id); return
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ Нет прав.", peer_id); return
+        target_id = None
+        reason = None
+        reply_msg = msg.get('reply_message')
+        if reply_msg:
+            target_id = reply_msg['from_id']
+            reason = ' '.join(parts[1:]) if len(parts) > 1 else None
+        elif len(parts) > 1:
+            target_id = resolve_user_id(api, parts[1])
+            reason = ' '.join(parts[2:]) if len(parts) > 2 else None
+        if not target_id:
+            send(api, uid, "Чтобы кикнуть пользователя введите kick @VK причина (пример: kick @durov причина)", peer_id); return
+        if target_id == uid:
+            send(api, uid, "😂 Нельзя кикнуть себя.", peer_id); return
+        try:
+            api.messages.removeChatUser(chat_id=chat_id, member_id=target_id)
+            admin_name, admin_link = get_vk_link(api, uid)
+            target_name, target_link = get_vk_link(api, target_id)
+            admin_mention = f"[{admin_link.replace('vk.com/', 'https://vk.com/')}|{admin_name}]"
+            target_mention = f"[{target_link.replace('vk.com/', 'https://vk.com/')}|{target_name}]"
+            log_mod_action("КИК", uid, admin_name, target_id, target_name, reason or "Не указана")
+            send(api, uid, f"{admin_mention} кикнул(-а) из беседы пользователя {target_mention} по причине: \"{reason or 'Не указана'}\"", peer_id)
+        except Exception as e:
+            send(api, uid, f"❌ Ошибка: {e}", peer_id)
+        return
+    
+    if cmd == "givemoney" and len(parts) >= 3:
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ Нет прав.", peer_id); return
+        try:
+            amount = float(parts[-1].replace(',', '.'))
+            raw_target = " ".join(parts[1:-1])
+            target = resolve_user_id(api, raw_target)
+        except:
+            send(api, uid, "❌ Формат: givemoney @durov [сумма]", peer_id); return
+        if not target:
+            send(api, uid, "❌ Пользователь не найден.", peer_id); return
+        target_user = get_user(target)
+        if not target_user:
+            add_or_update_user(api, target)
+        update_balance(target, amount)
+        tname, _ = get_vk_link(api, target)
+        send(api, uid, f"✅ Выдано {fmt_big(amount)}$ пользователю {tname}", peer_id)
+        return
+    
+    if cmd == "giftvip":
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ Нет прав.", peer_id); return
+        if len(parts) < 3:
+            send(api, uid, "❌ Формат: giftvip @durov [уровень 1/2/3] [дней, необязательно]\n\nУровни:\n1 — 💎 Standard VIP\n2 — 🥇 Gold VIP\n3 — 👑 Platinum VIP\n\nПример: giftvip @durov 2 30", peer_id)
+            return
+        target = resolve_user_id(api, parts[1])
+        if not target:
+            send(api, uid, "❌ Пользователь не найден.", peer_id); return
+        try:
+            level = int(parts[2])
+        except:
+            send(api, uid, "❌ Уровень должен быть 1, 2 или 3.", peer_id); return
+        if level not in (1, 2, 3):
+            send(api, uid, "❌ Уровень должен быть 1, 2 или 3.", peer_id); return
+        days = 30
+        if len(parts) >= 4:
+            try:
+                days = int(parts[3])
+            except:
+                pass
+        expires = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        target_user = get_user(target)
+        if not target_user:
+            add_or_update_user(api, target)
+        with sqlite3.connect(DB_NAME) as c:
+            c.execute("UPDATE users SET vip=1, vip_level=?, vip_expires=? WHERE id=?", (level, expires, target))
+            c.commit()
+        vinfo = VIP_LEVELS[level]
+        tname, _ = get_vk_link(api, target)
+        send(api, uid, f"✅ VIP выдан!\n━━━━━━━━━━━━━━━\n👤 Пользователь: {tname}\n{vinfo['emoji']} Уровень: {vinfo['name']}\n📅 Срок: {days} дн. (до {expires[:10]})", peer_id)
+        send(api, target, f"🎉 Вам выдан VIP статус!\n━━━━━━━━━━━━━━━\n{vinfo['emoji']} Уровень: {vinfo['name']}\n📅 Действует {days} дн. до {expires[:10]}\n\nИспользуйте мой статус для подробностей.", peer_id)
+        return
+    
+    # ==================== ПРОМОКОДЫ ====================
+    if cmd in ["промо", "promo", "промокод"]:
+        if len(parts) < 2:
+            send(api, uid, "🎟 ПРОМОКОДЫ\n━━━━━━━━━━━━━━━\nВведите промокод командой:\nпромо [КОД]\n\nПример: промо CASINO2025", peer_id)
+            return
+        code = parts[1].strip().upper()
+        reward, err = promo_use(uid, code)
+        if err:
+            send(api, uid, err, peer_id)
+            return
+        update_balance(uid, reward)
+        uname, _ = get_vk_link(api, uid)
+        send(api, uid, f"🎟 ПРОМОКОД АКТИВИРОВАН!\n━━━━━━━━━━━━━━━\n👤 {uname}\n🔑 Промокод: {code}\n\n✅ Вы успешно ввели промокод ({code}).\n💰 Вы получили {fmt_big(reward)}$", peer_id)
+        return
+    
+    if cmd == "создатьпромо":
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ Нет прав.", peer_id); return
+        if len(parts) < 4:
+            send(api, uid, "❌ Формат: создатьпромо [КОД] [сумма] [макс_использований]", peer_id); return
+        code = parts[1].strip().upper()
+        try:
+            reward = float(parts[2].replace(',', '.').replace(' ', ''))
+            max_uses = int(parts[3])
+        except:
+            send(api, uid, "❌ Неверный формат суммы или количества использований.", peer_id); return
+        if promo_create(code, reward, max_uses):
+            send(api, uid, f"✅ Промокод создан!\n🔑 Код: {code}\n💰 Награда: {fmt_big(reward)}$\n🔁 Использований: {max_uses}", peer_id)
+        else:
+            send(api, uid, f"❌ Промокод {code} уже существует.", peer_id)
+        return
+    
+    if cmd == "удалитьпромо":
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ Нет прав.", peer_id); return
+        if len(parts) < 2:
+            send(api, uid, "❌ Формат: удалитьпромо [КОД]", peer_id); return
+        code = parts[1].strip().upper()
+        promo = promo_get(code)
+        if not promo:
+            send(api, uid, f"❌ Промокод {code} не найден.", peer_id); return
+        promo_delete(code)
+        send(api, uid, f"🗑 Промокод {code} удалён.", peer_id)
+        return
+    
+    if cmd == "списокпромо":
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ Нет прав.", peer_id); return
+        promos = promo_list()
+        if not promos:
+            send(api, uid, "📋 Промокодов нет.", peer_id); return
+        lines = ["📋 СПИСОК ПРОМОКОДОВ\n━━━━━━━━━━━━━━━"]
+        for p in promos:
+            status = "✅" if p['used_count'] < p['max_uses'] else "❌"
+            lines.append(f"{status} {p['code']} — {fmt_big(p['reward'])}$ ({p['used_count']}/{p['max_uses']} исп.)")
+        send(api, uid, "\n".join(lines), peer_id)
+        return
+    
+    if cmd in ["варн", "warn"]:
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ Нет прав.", peer_id); return
+        target_id = None; reason = "Без причины"
+        reply_msg = msg.get('reply_message')
+        if reply_msg:
+            target_id = reply_msg['from_id']
+            reason = ' '.join(parts[1:]) if len(parts) > 1 else "Без причины"
+        elif len(parts) > 1:
+            target_id = resolve_user_id(api, parts[1])
+            reason = ' '.join(parts[2:]) if len(parts) > 2 else "Без причины"
+        if not target_id:
+            send(api, uid, "Чтобы выдать пользователю предупреждение введите warn @VK причина (пример: warn @durov причина) аналогично с unwarn", peer_id); return
+        if target_id == uid:
+            send(api, uid, "😂 Нельзя варнить себя.", peer_id); return
+        target_user = get_user(target_id)
+        if not target_user:
+            add_or_update_user(api, target_id); target_user = get_user(target_id)
+        warns = (target_user['warns'] or 0) + 1
+        try:
+            reasons = json.loads(target_user['warn_reasons'] or '[]')
+        except:
+            reasons = []
+        reasons.append(reason)
+        with sqlite3.connect(DB_NAME) as c:
+            c.execute("UPDATE users SET warns=?, warn_reasons=? WHERE id=?", (warns, json.dumps(reasons, ensure_ascii=False), target_id))
+            c.commit()
+        admin_name, admin_link = get_vk_link(api, uid)
+        target_name, target_link = get_vk_link(api, target_id)
+        admin_mention = f"[{admin_link.replace('vk.com/', 'https://vk.com/')}|{admin_name}]"
+        warn_ordinals = {1: "первый", 2: "второй", 3: "третий"}
+        warn_word = warn_ordinals.get(warns, f"{warns}-й")
+        log_mod_action("ВАРН", uid, admin_name, target_id, target_name, reason, f"{warns}/3")
+        msg_text = f"💬 Пользователь {admin_mention} выдал {warn_word} варн пользователю - {target_name} по причине: {reason}."
+        if warns >= 3:
+            msg_text += "\n🚫 3 варна — исключаю!"
+            send(api, uid, msg_text, peer_id)
+            if chat_id:
+                try:
+                    api.messages.removeChatUser(chat_id=chat_id, member_id=target_id)
+                except:
+                    pass
+            with sqlite3.connect(DB_NAME) as c:
+                c.execute("UPDATE users SET warns=0, warn_reasons='[]' WHERE id=?", (target_id,))
+                c.commit()
+        else:
+            send(api, uid, msg_text, peer_id)
+        return
+    
+    if cmd in ["варны", "warns"]:
+        target_id = uid
+        if len(parts) > 1:
+            target_id = resolve_user_id(api, parts[1]) or uid
+        target_user = get_user(target_id)
+        if not target_user:
+            send(api, uid, "❌ Пользователь не найден.", peer_id); return
+        warns = target_user['warns'] or 0
+        try:
+            reasons = json.loads(target_user['warn_reasons'] or '[]')
+        except:
+            reasons = []
+        tname = target_user['nickname'] or target_user['username'] or f"id{target_id}"
+        text = f"⚠️ Варны {tname}: [{warns}/3]\n\n"
+        text += "\n".join(f"{i}. {r}" for i, r in enumerate(reasons, 1)) if reasons else "Варнов нет ✅"
+        send(api, uid, text, peer_id)
+        return
+    
+    if cmd in ["снятьварн", "unwarn"]:
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ Нет прав.", peer_id); return
+        target_id = None
+        reply_msg = msg.get('reply_message')
+        if reply_msg: target_id = reply_msg['from_id']
+        elif len(parts) > 1: target_id = resolve_user_id(api, parts[1])
+        if not target_id:
+            send(api, uid, "❓ Укажите пользователя.", peer_id); return
+        target_user = get_user(target_id)
+        if not target_user:
+            send(api, uid, "❌ Пользователь не найден.", peer_id); return
+        warns = target_user['warns'] or 0
+        if warns == 0:
+            send(api, uid, f"✅ У {target_user['username']} нет варнов.", peer_id); return
+        try:
+            reasons = json.loads(target_user['warn_reasons'] or '[]')
+        except:
+            reasons = []
+        if reasons: reasons.pop()
+        new_warns = max(0, warns - 1)
+        with sqlite3.connect(DB_NAME) as c:
+            c.execute("UPDATE users SET warns=?, warn_reasons=? WHERE id=?", (new_warns, json.dumps(reasons, ensure_ascii=False), target_id))
+            c.commit()
+        send(api, uid, f"✅ Снят варн с {target_user['username']}. Осталось: [{new_warns}/3]", peer_id)
+        return
+    
+    if cmd in ["мут", "mute"]:
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ Нет прав.", peer_id); return
+        target_id = None; minutes = None; reason = "Без причины"
+        reply_msg = msg.get('reply_message')
+        if reply_msg:
+            target_id = reply_msg['from_id']
+            try:
+                minutes = int(parts[1])
+                reason = ' '.join(parts[2:]) if len(parts) > 2 else "Без причины"
+            except: pass
+        elif len(parts) >= 3:
+            target_id = resolve_user_id(api, parts[1])
+            try:
+                minutes = int(parts[2])
+                reason = ' '.join(parts[3:]) if len(parts) > 3 else "Без причины"
+            except: pass
+        if not target_id or not minutes or minutes <= 0:
+            send(api, uid, "Чтобы выдать пользователю блокировку чата введите mute @VK time(в минутах) причина. (пример: mute @durov 10 причина) аналогично с unmute", peer_id); return
+        if target_id == uid:
+            send(api, uid, "😂 Нельзя замутить себя.", peer_id); return
+        target_user = get_user(target_id)
+        if not target_user:
+            add_or_update_user(api, target_id)
+        muted_until = datetime.now() + timedelta(minutes=minutes)
+        db_set(target_id, muted_until=muted_until.strftime("%Y-%m-%d %H:%M:%S"))
+        admin_name, admin_link = get_vk_link(api, uid)
+        target_name, target_link = get_vk_link(api, target_id)
+        admin_mention = f"[{admin_link.replace('vk.com/', 'https://vk.com/')}|{admin_name}]"
+        target_mention = f"[{target_link.replace('vk.com/', 'https://vk.com/')}|{target_name}]"
+        log_mod_action("МУТ", uid, admin_name, target_id, target_name, reason, f"{minutes} мин.")
+        send(api, uid, f"🔇 {admin_mention} выдал блокировку чата пользователю {target_mention} на {minutes} мин. по причине: \"{reason}\". Размут в: {muted_until.strftime('%H:%M:%S')}", peer_id)
+        return
+    
+    if cmd in ["размут", "unmute"]:
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ Нет прав.", peer_id); return
+        target_id = None
+        reply_msg = msg.get('reply_message')
+        if reply_msg: target_id = reply_msg['from_id']
+        elif len(parts) > 1: target_id = resolve_user_id(api, parts[1])
+        if not target_id:
+            send(api, uid, "❓ Укажите пользователя.", peer_id); return
+        target_user = get_user(target_id)
+        if not target_user:
+            send(api, uid, "❌ Пользователь не найден.", peer_id); return
+        db_set(target_id, muted_until=None)
+        send(api, uid, f"🔊 {target_user['username']} размучен.", peer_id)
+        return
+    
+    if cmd in ["блок", "ban"]:
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ Нет прав.", peer_id); return
+        target_id = None; reason = "Без причины"
+        reply_msg = msg.get('reply_message')
+        if reply_msg:
+            target_id = reply_msg['from_id']
+            reason = ' '.join(parts[1:]) if len(parts) > 1 else "Без причины"
+        elif len(parts) > 1:
+            target_id = resolve_user_id(api, parts[1])
+            reason = ' '.join(parts[2:]) if len(parts) > 2 else "Без причины"
+        if not target_id:
+            send(api, uid, "Чтобы заблокировать пользователя введите команду ban @VK причина (пример: ban @durov причина) аналогично с unban", peer_id); return
+        if target_id == uid:
+            send(api, uid, "😂 Нельзя забанить себя.", peer_id); return
+        target_user = get_user(target_id)
+        if not target_user:
+            add_or_update_user(api, target_id)
+        db_set(target_id, is_blocked=1)
+        if chat_id:
+            try:
+                api.messages.removeChatUser(chat_id=chat_id, member_id=target_id)
+            except Exception as _ke:
+                logger.warning(f"Kick on ban failed: {_ke}")
+        admin_name, admin_link = get_vk_link(api, uid)
+        target_name, target_link = get_vk_link(api, target_id)
+        admin_mention = f"[{admin_link.replace('vk.com/', 'https://vk.com/')}|{admin_name}]"
+        target_mention = f"[{target_link.replace('vk.com/', 'https://vk.com/')}|{target_name}]"
+        log_mod_action("БАН", uid, admin_name, target_id, target_name, reason)
+        send(api, uid, f"⚡ Пользователь {admin_mention} заблокировал пользователя - {target_mention} навсегда по причине: \"{reason}\".", peer_id)
+        return
+    
+    if cmd in ["разблок", "unban"]:
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ Нет прав.", peer_id); return
+        target_id = None
+        reply_msg = msg.get('reply_message')
+        if reply_msg: target_id = reply_msg['from_id']
+        elif len(parts) > 1: target_id = resolve_user_id(api, parts[1])
+        if not target_id:
+            send(api, uid, "❓ Укажите пользователя.", peer_id); return
+        target_user = get_user(target_id)
+        if not target_user:
+            send(api, uid, "❌ Пользователь не найден.", peer_id); return
+        db_set(target_id, is_blocked=0)
+        target_name, target_link = get_vk_link(api, target_id)
+        send(api, uid, f"✅ Бан снят с {target_name} ({target_link}).", peer_id)
+        return
+    
+    # ==================== ЛОГИ МОДЕРАЦИИ ====================
+    if cmd in ["логи", "modlogs"]:
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ Нет прав.", peer_id); return
+        filter_action = parts[1].upper() if len(parts) > 1 else None
+        with sqlite3.connect(DB_NAME) as c:
+            c.row_factory = sqlite3.Row
+            if filter_action in ("БАН", "КИК", "ВАРН", "МУТ"):
+                rows = c.execute(
+                    "SELECT * FROM mod_logs WHERE action=? ORDER BY id DESC LIMIT 20", (filter_action,)
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT * FROM mod_logs ORDER BY id DESC LIMIT 20"
+                ).fetchall()
+        if not rows:
+            send(api, uid, "📋 Логов модерации нет.", peer_id); return
+        action_emoji = {"БАН": "⚡", "КИК": "🚫", "ВАРН": "💬", "МУТ": "🔇"}
+        lines = ["📋 ЛОГИ МОДЕРАЦИИ (последние 20)\n━━━━━━━━━━━━━━━"]
+        for r in rows:
+            emoji = action_emoji.get(r["action"], "🔹")
+            extra = f" [{r['extra']}]" if r["extra"] else ""
+            lines.append(
+                f"{emoji} {r['action']}{extra} | {r['created_at'][5:16]}\n"
+                f"   👮 {r['admin_name']} → 👤 {r['target_name']}\n"
+                f"   📋 {r['reason'] or '—'}"
+            )
+        send(api, uid, "\n".join(lines), peer_id)
+        return
+
+    # ==================== КАСТОМНЫЕ АЛИАСЫ ====================
+    if cmd == "cmd":
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ Нет прав.", peer_id); return
+        if len(parts) < 3:
+            send(api, uid, "❌ Формат: /cmd [оригинал] [алиас]", peer_id); return
+        original = parts[1].lower().lstrip('/')
+        alias = parts[2].lower().lstrip('/')
+        if alias == original:
+            send(api, uid, "❌ Алиас не может совпадать с оригиналом.", peer_id); return
+        custom_cmds[alias] = original
+        save_custom_cmds(custom_cmds)
+        send(api, uid, f"✅ /{alias} → /{original}", peer_id)
+        return
+    
+    if cmd == "delcmd":
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ Нет прав.", peer_id); return
+        if len(parts) < 2:
+            send(api, uid, "❌ Формат: /delcmd [алиас]", peer_id); return
+        alias = parts[1].lower().lstrip('/')
+        if alias not in custom_cmds:
+            send(api, uid, f"❌ Алиас /{alias} не найден.", peer_id); return
+        del custom_cmds[alias]
+        save_custom_cmds(custom_cmds)
+        send(api, uid, f"✅ Алиас /{alias} удалён.", peer_id)
+        return
+    
+    if cmd == "cmds":
+        if not custom_cmds:
+            send(api, uid, "📋 Алиасов нет.\n/cmd [оригинал] [алиас]", peer_id); return
+        text = "📋 КАСТОМНЫЕ АЛИАСЫ\n━━━━━━━━━━━━━━━\n"
+        for alias, original in custom_cmds.items():
+            text += f"/{alias} → /{original}\n"
+        send(api, uid, text, peer_id)
+        return
+
+# ==================== HELPER FUNCTIONS ====================
+def _buy_property(api, uid, user, peer_id, num, col, catalog, prop_type_name, buy_cmd):
+    if num not in catalog:
+        nums = ", ".join(catalog.keys())
+        send(api, uid, f"❌ Неверный номер. Доступны: {nums}", peer_id)
+        return
+    item = catalog[num]
+    item_name = item['name']
+    price = item['price']
+    if user['balance'] < price:
+        send(api, uid, f"❌ Недостаточно средств. Нужно {fmt_big(price)}$", peer_id)
+        return
+    items = get_user_items(user, col)
+    if item_name in items:
+        send(api, uid, f"❌ У вас уже есть {item['emoji']} {item_name}", peer_id)
+        return
+    update_balance(uid, -price)
+    add_item(uid, col, item_name)
+    photo = item.get('photo')
+    send(api, uid, f"✅ Куплено {item['emoji']} {item_name} за {fmt_big(price)}$!", peer_id, attachment=photo if photo else None)
+
+def _show_single_property(api, uid, user, peer_id, col, catalog, title):
+    items = get_user_items(user, col)
+    if not items:
+        send(api, uid, f"{title}\n\nУ вас ничего нет.", peer_id)
+        return
+    text = f"{title}\n━━━━━━━━━━━━━━━\n"
+    for item_name in items:
+        for k, v in catalog.items():
+            if v['name'].lower() == item_name.lower():
+                text += f"{v['emoji']} {item_name} — {fmt_big(v['price'])}$\n"
+                break
+    send(api, uid, text, peer_id)
+
+def handle_message_shortcut_property(api, uid, user, peer_id, cmd):
+    pass
+
+def _show_building_status(api, uid, peer_id, bkey, user):
+    bdata = BUSINESSES[bkey]
+    level = user[bdata["col"]] or 0
+    col_time = user[bdata["col_time"]]
+    now = datetime.now()
+    text = f"{bdata['name']}\n━━━━━━━━━━━━━━━\nУровень: {level}\n"
+    if col_time:
+        elapsed = (now - datetime.strptime(col_time, "%Y-%m-%d %H:%M:%S")).total_seconds() / 3600
+        if elapsed >= bdata['cooldown_hours']:
+            text += f"✅ Готово к сбору!\n"
+            if "ore" in bdata:
+                text += f"⛏ Ожидает: {bdata['income']} {bdata['ore']}\n"
+            elif "bitcoin" in bdata:
+                text += f"📀 Ожидает: {bdata['bitcoin']} BTC\n"
+            else:
+                text += f"💰 Ожидает: {fmt_big(bdata['income'])}$\n"
+        else:
+            remaining = timedelta(hours=bdata['cooldown_hours']) - timedelta(hours=elapsed)
+            text += f"⏳ До сбора: {fmt_time(remaining)}\n"
+    else:
+        text += "✅ Готово к сбору!\n"
+    if "needs_water" in bdata and bdata["needs_water"]:
+        water_col = bdata["water_col"]
+        last_water = user.get(water_col)
+        if last_water:
+            elapsed_w = (now - datetime.strptime(last_water, "%Y-%m-%d %H:%M:%S")).total_seconds() / 3600
+            text += f"💧 Полито {int(elapsed_w)} ч. назад\n"
+        else:
+            text += f"💧 Нужен полив!\n"
+    collect_cmd = f"/собрать{bkey}"
+    text += f"━━━━━━━━━━━━━━━\n{collect_cmd} — собрать"
+    send(api, uid, text, peer_id)
+
+def _build_building(api, uid, user, peer_id, bkey):
+    bdata = BUSINESSES[bkey]
+    level = user[bdata["col"]] or 0
+    if level > 0:
+        send(api, uid, f"❌ {bdata['name']} уже построен!", peer_id)
+        return
+    price = bdata["price"]
+    if user['balance'] < price:
+        send(api, uid, f"❌ Нужно {fmt_big(price)}$. У вас {fmt_big(user['balance'])}$", peer_id)
+        return
+    update_balance(uid, -price)
+    db_set(uid, **{bdata["col"]: 1})
+    send(api, uid, f"✅ {bdata['name']} построен!\n💰 Стоимость: {fmt_big(price)}$\n⏳ Первый сбор через {bdata['cooldown_hours']} ч.", peer_id)
+
+def _collect_building(api, uid, peer_id, bkey):
+    result, status = collect_building(uid, bkey)
+    bdata = BUSINESSES[bkey]
+    if status == "not_built":
+        send(api, uid, f"❌ {bdata['name']} не построен.", peer_id)
+    elif status == "not_watered":
+        send(api, uid, f"💧 Полейте сначала! Урожая не будет без полива.", peer_id)
+    elif isinstance(status, timedelta):
+        send(api, uid, f"⏳ Ещё не готово. Подождите: {fmt_time(status)}", peer_id)
+    elif status == "ok":
+        rtype, *rdata = result
+        if rtype == "money":
+            send(api, uid, f"✅ {bdata['name']}: собрано {fmt_big(rdata[0])}$!", peer_id)
+        elif rtype == "ore":
+            ore_name, amount = rdata
+            ore_emoji = ORE_TYPES[ore_name]["emoji"]
+            send(api, uid, f"✅ {bdata['name']}: собрано {amount} {ore_emoji} {ore_name}!", peer_id)
+        elif rtype == "btc":
+            send(api, uid, f"✅ {bdata['name']}: собрано {rdata[0]} BTC!", peer_id)
+
+def handle_message_event(api, event):
+    try:
+        obj = event.object
+    except Exception as e:
+        logger.error(f"MESSAGE_EVENT dump error: {e}")
+        obj = event.object
+    uid = obj.get('user_id')
+    peer_id = obj.get('peer_id')
+    event_id = obj.get('event_id')
+    cmid = obj.get('conversation_message_id')
+    payload = obj.get('payload', {})
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except:
+            payload = {}
+    elif not isinstance(payload, dict):
+        payload = {}
+    def answer(text="✅"):
+        try:
+            api.messages.sendMessageEventAnswer(event_id=event_id, user_id=uid, peer_id=peer_id, event_data=json.dumps({"type": "show_snackbar", "text": text}, ensure_ascii=False))
+        except Exception as e:
+            logger.error(f"sendMessageEventAnswer error: {e}")
+    try:
+        cmd = payload.get('cmd')
+        if cmd == 'help_cat':
+            owner = payload.get('owner')
+            if owner and int(owner) != int(uid):
+                answer("❌ Это не ваша помощь")
+                return
+            cat = payload.get('cat', 'main')
+            if cat == 'main':
+                text = "1️⃣ ОСНОВНОЕ\n━━━━━━━━━━━━━━━\n👤 Профиль:\nменю / баланс / опыт / энергия\nмой ник / сменить ник [ник]\nмой статус / статусы / мой лимит\n\n🎁 Бонусы:\nбонус — каждые 1.5–3 ч\n\n🏦 Финансы:\nбанк / депозит / биткоин / казна\nдать @durov [сумма] / рейтинг\nкурс руды / инвентарь\n\n⛏ Добыча:\nшахта / копать / продать [руда]\n\n🏘 Имущество:\nмашины / телефоны / самолеты\nяхты / вертолеты / дома\nмоё имущество\n\n🏢 Постройки:\nбизнес / генератор / ферма\nкарьер / денежное дерево / сад\nзелья / ограбить мэрию\n\n💒 Браки: свадьба / развод / мой брак\n📦 Кейсы: кейсы / buycase / opencase\n👑 Топ: топ [баланс|рейтинг|опыт|btc]"
+            elif cat == 'games':
+                text = "2️⃣ ИГРЫ\n━━━━━━━━━━━━━━━\n🎰 казино [ставка] — слоты\n🎲 кубик [ставка] — угадай чётное/нечётное\n🏀 баскетбол [ставка] — бросок мяча\n🎯 дартс [ставка] — точный бросок\n🎳 боулинг [ставка] — удар по кеглям\n🔄 трейд [ставка] — обмен\n\n💡 Во всех играх ставьте любую сумму.\nМинимальная ставка: 10$\nМаксимальная: ваш лимит\n\n⛏ Майнинг:\nкопать — добывай руду\nшахта — уровень шахты\nпродать [руда|всё] — продать руду\nбиткоины — биткоин-кошелёк\nbtc — текущий курс BTC\n\n🥊 Дуэли:\nдуэль @ник [сумма] — вызвать игрока"
+            else:
+                text = "3️⃣ РАЗВЛЕЧЕНИЯ\n━━━━━━━━━━━━━━━\n🔮 шар [вопрос] — магический шар\n🎱 выбери [а|б|в] — случайный выбор\n🍀 испытать удачу — проверь удачу\n📊 инфо — статистика сервера\n\n💒 Романтика:\nсвадьба @ник — предложение\nразвод — расторжение брака\nмой брак — инфо о браке\nбраки — список пар\n\n🎭 РП команды:\nрп команды — список РП действий\n\n🛡 VIP статус:\nстатусы — список VIP уровней\nмой статус — ваш текущий статус\n\n📊 Рейтинг:\nрейтинг / продать рейтинг\nтоп — топ игроков чата"
+            kb = VkKeyboard(inline=True)
+            kb.add_callback_button("1️⃣ Основное", color=VkKeyboardColor.PRIMARY if cat == 'main' else VkKeyboardColor.SECONDARY, payload={"cmd": "help_cat", "cat": "main", "owner": uid})
+            kb.add_callback_button("2️⃣ Игры", color=VkKeyboardColor.PRIMARY if cat == 'games' else VkKeyboardColor.SECONDARY, payload={"cmd": "help_cat", "cat": "games", "owner": uid})
+            kb.add_callback_button("3️⃣ Развлечения", color=VkKeyboardColor.PRIMARY if cat == 'fun' else VkKeyboardColor.SECONDARY, payload={"cmd": "help_cat", "cat": "fun", "owner": uid})
+            answer("✅")
+            try:
+                api.messages.edit(peer_id=peer_id, conversation_message_id=cmid, message=text, keyboard=kb.get_keyboard())
+            except Exception as e:
+                logger.error(f"messages.edit error: {e}")
+                send(api, uid, text, peer_id, keyboard=kb)
+        elif cmd == 'menu_tab':
+            owner = payload.get('owner')
+            if owner and int(owner) != int(uid):
+                answer("❌ Это меню не ваше")
+                return
+            tab = payload.get('tab', 'property')
+            user = get_user(uid)
+            if tab == 'property':
+                prop_map = [("cars", CARS, "🚗 Машины"), ("phones", PHONES, "📱 Телефоны"), ("planes", PLANES, "✈ Самолеты"), ("yachts", YACHTS, "🛥 Яхты"), ("helicopters", HELICOPTERS, "🚁 Вертолеты"), ("houses", HOUSES, "🏠 Дома")]
+                lines = ["📦 Ваше имущество:\n"]
+                has_any = False
+                for col, catalog, label in prop_map:
+                    items = get_user_items(user, col)
+                    if items:
+                        has_any = True
+                        for item in items:
+                            n = item if isinstance(item, str) else str(item)
+                            entry = catalog.get(n) or catalog.get(int(n) if str(n).isdigit() else n)
+                            name = entry['name'] if entry else n
+                            lines.append(f"• {name}")
+                if not has_any:
+                    lines.append("😔 У вас нет имущества.")
+                text = "\n".join(lines)
+            else:
+                biz_map = [("business_level", "🏗 Бизнес"), ("generator_level", "🏭 Генератор"), ("farm_level", "🧰 Майнинг ферма"), ("quarry_level", "⚠️ Карьер"), ("tree_level", "🌳 Денежное дерево"), ("garden_level", "🌳 Сад")]
+                lines = ["🧳 Ваши бизнесы:\n"]
+                has_any = False
+                for col, label in biz_map:
+                    lvl = user[col] or 0
+                    if lvl > 0:
+                        has_any = True
+                        lines.append(f"• {label} — ур. {lvl}")
+                if not has_any:
+                    lines.append("😔 У вас нет бизнесов.")
+                text = "\n".join(lines)
+            kb = VkKeyboard(inline=True)
+            kb.add_callback_button("📦 Имущество", color=VkKeyboardColor.PRIMARY if tab == 'property' else VkKeyboardColor.SECONDARY, payload={"cmd": "menu_tab", "tab": "property", "owner": uid})
+            kb.add_callback_button("🧳 Бизнесы", color=VkKeyboardColor.PRIMARY if tab == 'businesses' else VkKeyboardColor.SECONDARY, payload={"cmd": "menu_tab", "tab": "businesses", "owner": uid})
+            answer("✅")
+            try:
+                api.messages.edit(peer_id=peer_id, conversation_message_id=cmid, message=text, keyboard=kb.get_keyboard())
+            except Exception as e:
+                logger.error(f"menu_tab edit error: {e}")
+                send(api, uid, text, peer_id, keyboard=kb)
+        elif cmd == 'property':
+            user = get_user(uid)
+            prop_map = [("cars", CARS, "🚗 Машины"), ("phones", PHONES, "📱 Телефоны"), ("planes", PLANES, "✈ Самолеты"), ("yachts", YACHTS, "🛥 Яхты"), ("helicopters", HELICOPTERS, "🚁 Вертолеты"), ("houses", HOUSES, "🏠 Дома")]
+            text = "🏘 МОЁ ИМУЩЕСТВО\n━━━━━━━━━━━━━━━\n"
+            has_any = False
+            for col, catalog, label in prop_map:
+                items = get_user_items(user, col)
+                if items:
+                    has_any = True
+                    text += f"\n{label}: {len(items)} шт.\n"
+            if not has_any:
+                text = "🏘 ВАШЕ ИМУЩЕСТВО\n\nУ вас ещё нет имущества."
+            answer("Имущество загружено")
+            send(api, uid, text, peer_id)
+        elif cmd == 'marry_accept':
+            from_uid = payload.get('from')
+            to_uid = payload.get('to')
+            if uid != to_uid:
+                answer("Это не ваше предложение")
+                return
+            from_user = get_user(from_uid)
+            to_user = get_user(to_uid)
+            if not from_user or not to_user:
+                answer("Ошибка")
+                return
+            if from_user['married_to'] or to_user['married_to']:
+                answer("Кто-то уже в браке")
+                return
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with sqlite3.connect(DB_NAME) as c:
+                c.execute("UPDATE users SET married_to=?, married_at=?, proposals_in='[]' WHERE id=?", (to_uid, now_str, from_uid))
+                c.execute("UPDATE users SET married_to=?, married_at=?, proposals_in='[]' WHERE id=?", (from_uid, now_str, to_uid))
+                c.commit()
+            fn, _ = get_vk_link(api, from_uid)
+            tn, _ = get_vk_link(api, to_uid)
+            answer("💍 Брак заключён!")
+            send(api, uid, f"💒 БРАКОСОЧЕТАНИЕ! 💒\n━━━━━━━━━━━━━━━\n💍 {fn} и {tn} теперь в браке! 🎉", peer_id)
+        elif cmd == 'marry_decline':
+            from_uid = payload.get('from')
+            to_uid = payload.get('to')
+            if uid != to_uid:
+                answer("Это не ваше предложение")
+                return
+            with sqlite3.connect(DB_NAME) as c:
+                c.execute("UPDATE users SET proposals_in='[]' WHERE id IN (?,?)", (from_uid, to_uid))
+                c.commit()
+            fn, _ = get_vk_link(api, from_uid)
+            tn, _ = get_vk_link(api, to_uid)
+            answer("❌ Отказано")
+            send(api, uid, f"💔 {tn} отказал(а) {fn}.", peer_id)
+        # ========== ПОЛЕ ЧУДЕС ОБРАБОТЧИКИ ==========
+        elif cmd == 'wordle_start':
+            cat = payload.get('cat', 'человек')
+            if cat == 'random':
+                cat = random.choice(list(WORDLE_CATEGORIES.keys()))
+            start_wordle(uid, cat)
+            game = WORDLE_GAME.get(uid)
+            if game:
+                display = get_wordle_display(game)
+                kb = VkKeyboard(inline=True)
+                kb.add_callback_button("🔄 Сменить категорию", color=VkKeyboardColor.SECONDARY, payload={"cmd": "wordle_cats"})
+                kb.add_callback_button("🚪 Завершить", color=VkKeyboardColor.NEGATIVE, payload={"cmd": "wordle_end"})
+                answer("✅ Игра запущена!")
+                try:
+                    api.messages.edit(peer_id=peer_id, conversation_message_id=cmid, message=f"🎯 ПОЛЕ ЧУДЕС\n📚 Категория: {cat}\n━━━━━━━━━━━━━━━\n\n📖 Слово: {display}\n\n🔤 Отправь букву или слово: слово: [вариант]\n\n⏳ Количество букв: {len(game['word'])}", keyboard=kb.get_keyboard())
+                except:
+                    send(api, uid, f"🎯 ПОЛЕ ЧУДЕС\n📚 Категория: {cat}\n━━━━━━━━━━━━━━━\n\n📖 Слово: {display}\n\n🔤 Отправь букву или слово: слово: [вариант]", peer_id, keyboard=kb)
+            return
+        elif cmd == 'wordle_cats':
+            kb = VkKeyboard(inline=True)
+            kb.add_callback_button("🧑 Человек", color=VkKeyboardColor.PRIMARY, payload={"cmd": "wordle_start", "cat": "человек"})
+            kb.add_callback_button("🏠 Быт", color=VkKeyboardColor.PRIMARY, payload={"cmd": "wordle_start", "cat": "быт"})
+            kb.add_callback_button("🌍 Мир", color=VkKeyboardColor.PRIMARY, payload={"cmd": "wordle_start", "cat": "мир"})
+            kb.add_callback_button("🔬 Наука", color=VkKeyboardColor.PRIMARY, payload={"cmd": "wordle_start", "cat": "наука"})
+            kb.add_callback_button("🎮 Развлечения", color=VkKeyboardColor.PRIMARY, payload={"cmd": "wordle_start", "cat": "развлечения"})
+            kb.add_callback_button("🎲 Случайное", color=VkKeyboardColor.SECONDARY, payload={"cmd": "wordle_start", "cat": "random"})
+            answer("🔽 Выбери категорию")
+            try:
+                api.messages.edit(peer_id=peer_id, conversation_message_id=cmid, message="🎲 ПОЛЕ ЧУДЕС 🎲\n━━━━━━━━━━━━━━━\n\nВыберите категорию:", keyboard=kb.get_keyboard())
+            except:
+                send(api, uid, "🎲 ПОЛЕ ЧУДЕС 🎲\n━━━━━━━━━━━━━━━\n\nВыберите категорию:", peer_id, keyboard=kb)
+            return
+        elif cmd == 'wordle_end':
+            if uid in WORDLE_GAME:
+                del WORDLE_GAME[uid]
+                answer("🛑 Игра завершена")
+                try:
+                    api.messages.edit(peer_id=peer_id, conversation_message_id=cmid, message="🎯 ПОЛЕ ЧУДЕС\n━━━━━━━━━━━━━━━\n\nИгра завершена!", keyboard=None)
+                except:
+                    send(api, uid, "🛑 Игра завершена!\n\nполе чудес — начать новую", peer_id)
+            else:
+                answer("❌ Игра не запущена")
+            return
+    except Exception as e:
+        logger.error(f"handle_message_event error: {e}")
+
+def main():
+    init_db()
+    restore_db()  # Восстанавливаем БД из датасета
+    logger.info("🚀 Запуск бота...")
+    try:
+        vk_session = VkApi(token=VK_TOKEN)
+        vk = vk_session.get_api()
+        longpoll = VkBotLongPoll(vk_session, GROUP_ID)
+        longpoll.update_longpoll_server()
+        vk.groups.setLongPollSettings(group_id=GROUP_ID, enabled=1, message_new=1, message_event=1)
+        logger.info("✅ Авторизация успешна!")
+        try:
+            vk.groups.setLongPollSettings(group_id=GROUP_ID, enabled=1, message_event=1)
+            logger.info("✅ LongPoll settings updated (message_event=1)")
+        except Exception as e:
+            logger.warning(f"LongPoll settings warning: {e}")
+        logger.info("✅ Бот работает! Напишите /меню")
+        while True:
+            try:
+                for event in longpoll.listen():
+                    try:
+                        if event.type == VkBotEventType.MESSAGE_NEW:
+                            handle_message(vk, event)
+                        elif event.type == VkBotEventType.MESSAGE_EVENT:
+                            handle_message_event(vk, event)
+                    except Exception as e:
+                        logger.error(f"Event error: {e}", exc_info=True)
+            except Exception as e:
+                logger.error(f"Longpoll error: {e}")
+                time.sleep(5)
+    except Exception as e:
+        logger.critical(f"Fatal error: {e}", exc_info=True)
+if __name__ == "__main__":
+    main()
+
