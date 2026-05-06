@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 
-import random, sqlite3, logging, time, re, json, math
+import random, sqlite3, logging, time, re, json, math, os
 from datetime import datetime, timedelta, timezone
 from vk_api import VkApi
 from vk_api.bot_longpoll import VkBotLongPoll, VkBotEventType
 from vk_api.keyboard import VkKeyboard, VkKeyboardColor
 from vk_api.utils import get_random_id
+from huggingface_hub import HfApi
 
 # ---------- КОНФИГ ----------
-VK_TOKEN = "vk1.a.wEVffgtJ5Szki-vnUgd_oPES5fId_uLZWo7-tDLy5sW5x-E52mZFzYxf3sC1RR6CWr6xue1FFYX0vJBr-saEW4Ym2W_gENt5WvwcqedTSDsccptFhzRpdWD1UC8brGpELjTdM5d7YLE1HNr0VUpqyZISY3Uy1NWp-wr4cooyTpLxYg5UOJiB2v5W3lJq_ZGlXve5zYzblSzeZO0ONA_tiQ"
+VK_TOKEN = os.environ.get("VK_TOKEN", "vk1.a.wEVffgtJ5Szki-vnUgd_oPES5fId_uLZWo7-tDLy5sW5x-E52mZFzYxf3sC1RR6CWr6xue1FFYX0vJBr-saEW4Ym2W_gENt5WvwcqedTSDsccptFhzRpdWD1UC8brGpELjTdM5d7YLE1HNr0VUpqyZISY3Uy1NWp-wr4cooyTpLxYg5UOJiB2v5W3lJq_ZGlXve5zYzblSzeZO0ONA_tiQ")
 GROUP_ID = 238368566
 ADMIN_IDS_FILE = "admin_ids.txt"
 START_BALANCE = 50000.0
@@ -20,6 +21,53 @@ CUSTOM_CMDS_FILE = "custom_cmds.json"
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# ========== НАСТРОЙКИ ДЛЯ ДАТАСЕТА ==========
+HF_DATASET = "botvk/vk_casino_db"  #vk_casino_db
+DB_FILE = "casino_vk.db"
+
+# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С ДАТАСЕТОМ ==========
+def backup_db():
+    """Сохраняет БД в датасет"""
+    token = os.environ.get("HF_TOKEN")
+    if not token:
+        return
+    
+    if not os.path.exists(DB_FILE):
+        return
+    
+    try:
+        api = HfApi(token=token)
+        api.upload_file(
+            path_or_fileobj=DB_FILE,
+            path_in_repo=DB_FILE,
+            repo_id=HF_DATASET,
+            repo_type="dataset",
+        )
+        print("✅ БД сохранена в датасет")
+    except Exception as e:
+        print(f"❌ Ошибка сохранения БД: {e}")
+
+def restore_db():
+    """Восстанавливает БД из датасета"""
+    token = os.environ.get("HF_TOKEN")
+    if not token:
+        return
+    
+    if os.path.exists(DB_FILE):
+        return
+    
+    try:
+        api = HfApi(token=token)
+        api.hf_hub_download(
+            repo_id=HF_DATASET,
+            filename=DB_FILE,
+            repo_type="dataset",
+            local_dir=".",
+        )
+        print("✅ БД восстановлена из датасета")
+    except:
+        print("⚠️ БД в датасете не найдена, создаётся новая")
 
 # ========== VIP УРОВНИ ==========
 VIP_LEVELS = {
@@ -146,6 +194,7 @@ MULTI_WORD_CMDS = {
     "денежное дерево": "денежноедерево", "курс руды": "курсруды", "продать рейтинг": "продатьрейтинг",
     "магический шар": "шар", "мой чат": "беседа", "рп команды": "рпкоманды", "топ баланс": "топ",
     "купить кейс": "buycase", "открыть кейс": "opencase",
+    "лог модерации": "логи",
 }
 
 # Набор всех допустимых команд
@@ -178,6 +227,7 @@ ALL_CMDS = {
     "варны","warns","снятьварн","unwarn","мут","mute","размут","unmute","блок","ban","разблок","unban",
     "cmd","delcmd","cmds","создатьпромо","удалитьпромо","списокпромо","giftvip",
     "мойбизнес","мойгенератор","мояферма","мойкарьер","моёдерево","мойсад","поле чудес", "полечудес",
+    "логи","modlogs",
 }
 
 # ========== МАГИЧЕСКИЕ ШАР ==========
@@ -318,12 +368,31 @@ def init_db():
             except Exception:
                 pass
         c.execute("""CREATE TABLE IF NOT EXISTS promos (code TEXT PRIMARY KEY, reward REAL NOT NULL, max_uses INTEGER NOT NULL, used_count INTEGER DEFAULT 0, created_at TEXT);""")
+        c.execute("""CREATE TABLE IF NOT EXISTS mod_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            action TEXT NOT NULL,
+            admin_id INTEGER NOT NULL,
+            admin_name TEXT,
+            target_id INTEGER NOT NULL,
+            target_name TEXT,
+            reason TEXT,
+            extra TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );""")
         c.commit()
 
 def get_user(uid):
     with sqlite3.connect(DB_NAME) as c:
         c.row_factory = sqlite3.Row
         return c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+
+def log_mod_action(action, admin_id, admin_name, target_id, target_name, reason=None, extra=None):
+    with sqlite3.connect(DB_NAME) as c:
+        c.execute(
+            "INSERT INTO mod_logs (action, admin_id, admin_name, target_id, target_name, reason, extra, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            (action, admin_id, admin_name, target_id, target_name, reason, extra, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        )
+        c.commit()
 
 # ==================== ПРОМОКОДЫ ====================
 def promo_create(code, reward, max_uses):
@@ -714,8 +783,6 @@ def handle_message(api, event):
         try:
             muted_until = datetime.strptime(user['muted_until'], "%Y-%m-%d %H:%M:%S")
             if datetime.now() < muted_until:
-                remaining = muted_until - datetime.now()
-                send(api, uid, f"🔇 Вы в муте. Осталось: {fmt_time(remaining)}", peer_id)
                 return
             else:
                 db_set(uid, muted_until=None)
@@ -2190,14 +2257,17 @@ def handle_message(api, event):
             target_id = resolve_user_id(api, parts[1])
             reason = ' '.join(parts[2:]) if len(parts) > 2 else None
         if not target_id:
-            send(api, uid, "❓ Укажите пользователя.", peer_id); return
+            send(api, uid, "Чтобы кикнуть пользователя введите kick @VK причина (пример: kick @durov причина)", peer_id); return
         if target_id == uid:
             send(api, uid, "😂 Нельзя кикнуть себя.", peer_id); return
         try:
             api.messages.removeChatUser(chat_id=chat_id, member_id=target_id)
             admin_name, admin_link = get_vk_link(api, uid)
             target_name, target_link = get_vk_link(api, target_id)
-            send(api, uid, f"🚫 КИК\n━━━━━━━━━━━━━━━\n👮 Модератор: {admin_name} ({admin_link})\n👤 Нарушитель: {target_name} ({target_link})\n📋 Причина: {reason or 'Не указана'}\n━━━━━━━━━━━━━━━", peer_id)
+            admin_mention = f"[{admin_link.replace('vk.com/', 'https://vk.com/')}|{admin_name}]"
+            target_mention = f"[{target_link.replace('vk.com/', 'https://vk.com/')}|{target_name}]"
+            log_mod_action("КИК", uid, admin_name, target_id, target_name, reason or "Не указана")
+            send(api, uid, f"{admin_mention} кикнул(-а) из беседы пользователя {target_mention} по причине: \"{reason or 'Не указана'}\"", peer_id)
         except Exception as e:
             send(api, uid, f"❌ Ошибка: {e}", peer_id)
         return
@@ -2325,7 +2395,7 @@ def handle_message(api, event):
             target_id = resolve_user_id(api, parts[1])
             reason = ' '.join(parts[2:]) if len(parts) > 2 else "Без причины"
         if not target_id:
-            send(api, uid, "❓ Укажите пользователя.", peer_id); return
+            send(api, uid, "Чтобы выдать пользователю предупреждение введите warn @VK причина (пример: warn @durov причина) аналогично с unwarn", peer_id); return
         if target_id == uid:
             send(api, uid, "😂 Нельзя варнить себя.", peer_id); return
         target_user = get_user(target_id)
@@ -2342,7 +2412,11 @@ def handle_message(api, event):
             c.commit()
         admin_name, admin_link = get_vk_link(api, uid)
         target_name, target_link = get_vk_link(api, target_id)
-        msg_text = f"⚠️ ПРЕДУПРЕЖДЕНИЕ [{warns}/3]\n━━━━━━━━━━━━━━━\n👮 Модератор: {admin_name} ({admin_link})\n👤 Нарушитель: {target_name} ({target_link})\n📋 Причина: {reason}\n━━━━━━━━━━━━━━━"
+        admin_mention = f"[{admin_link.replace('vk.com/', 'https://vk.com/')}|{admin_name}]"
+        warn_ordinals = {1: "первый", 2: "второй", 3: "третий"}
+        warn_word = warn_ordinals.get(warns, f"{warns}-й")
+        log_mod_action("ВАРН", uid, admin_name, target_id, target_name, reason, f"{warns}/3")
+        msg_text = f"💬 Пользователь {admin_mention} выдал {warn_word} варн пользователю - {target_name} по причине: {reason}."
         if warns >= 3:
             msg_text += "\n🚫 3 варна — исключаю!"
             send(api, uid, msg_text, peer_id)
@@ -2406,18 +2480,22 @@ def handle_message(api, event):
     if cmd in ["мут", "mute"]:
         if uid not in ADMIN_IDS:
             send(api, uid, "⛔ Нет прав.", peer_id); return
-        target_id = None; minutes = None
+        target_id = None; minutes = None; reason = "Без причины"
         reply_msg = msg.get('reply_message')
         if reply_msg:
             target_id = reply_msg['from_id']
-            try: minutes = int(parts[1])
+            try:
+                minutes = int(parts[1])
+                reason = ' '.join(parts[2:]) if len(parts) > 2 else "Без причины"
             except: pass
         elif len(parts) >= 3:
             target_id = resolve_user_id(api, parts[1])
-            try: minutes = int(parts[2])
+            try:
+                minutes = int(parts[2])
+                reason = ' '.join(parts[3:]) if len(parts) > 3 else "Без причины"
             except: pass
         if not target_id or not minutes or minutes <= 0:
-            send(api, uid, "❓ Формат: мут @durov [минуты]", peer_id); return
+            send(api, uid, "Чтобы выдать пользователю блокировку чата введите mute @VK time(в минутах) причина. (пример: mute @durov 10 причина) аналогично с unmute", peer_id); return
         if target_id == uid:
             send(api, uid, "😂 Нельзя замутить себя.", peer_id); return
         target_user = get_user(target_id)
@@ -2427,7 +2505,10 @@ def handle_message(api, event):
         db_set(target_id, muted_until=muted_until.strftime("%Y-%m-%d %H:%M:%S"))
         admin_name, admin_link = get_vk_link(api, uid)
         target_name, target_link = get_vk_link(api, target_id)
-        send(api, uid, f"🔇 МУТ\n━━━━━━━━━━━━━━━\n👮 {admin_name} ({admin_link})\n👤 {target_name} ({target_link})\n⏱ {minutes} мин.\n🕐 Размут в: {muted_until.strftime('%H:%M:%S')}\n━━━━━━━━━━━━━━━", peer_id)
+        admin_mention = f"[{admin_link.replace('vk.com/', 'https://vk.com/')}|{admin_name}]"
+        target_mention = f"[{target_link.replace('vk.com/', 'https://vk.com/')}|{target_name}]"
+        log_mod_action("МУТ", uid, admin_name, target_id, target_name, reason, f"{minutes} мин.")
+        send(api, uid, f"🔇 {admin_mention} выдал блокировку чата пользователю {target_mention} на {minutes} мин. по причине: \"{reason}\". Размут в: {muted_until.strftime('%H:%M:%S')}", peer_id)
         return
     
     if cmd in ["размут", "unmute"]:
@@ -2458,7 +2539,7 @@ def handle_message(api, event):
             target_id = resolve_user_id(api, parts[1])
             reason = ' '.join(parts[2:]) if len(parts) > 2 else "Без причины"
         if not target_id:
-            send(api, uid, "❓ Укажите пользователя.", peer_id); return
+            send(api, uid, "Чтобы заблокировать пользователя введите команду ban @VK причина (пример: ban @durov причина) аналогично с unban", peer_id); return
         if target_id == uid:
             send(api, uid, "😂 Нельзя забанить себя.", peer_id); return
         target_user = get_user(target_id)
@@ -2467,7 +2548,10 @@ def handle_message(api, event):
         db_set(target_id, is_blocked=1)
         admin_name, admin_link = get_vk_link(api, uid)
         target_name, target_link = get_vk_link(api, target_id)
-        send(api, uid, f"🔨 БАН\n━━━━━━━━━━━━━━━\n👮 {admin_name} ({admin_link})\n👤 {target_name} ({target_link})\n📋 {reason}\n━━━━━━━━━━━━━━━", peer_id)
+        admin_mention = f"[{admin_link.replace('vk.com/', 'https://vk.com/')}|{admin_name}]"
+        target_mention = f"[{target_link.replace('vk.com/', 'https://vk.com/')}|{target_name}]"
+        log_mod_action("БАН", uid, admin_name, target_id, target_name, reason)
+        send(api, uid, f"⚡ Пользователь {admin_mention} заблокировал пользователя - {target_mention} навсегда по причине: \"{reason}\".", peer_id)
         return
     
     if cmd in ["разблок", "unban"]:
@@ -2487,6 +2571,36 @@ def handle_message(api, event):
         send(api, uid, f"✅ Бан снят с {target_name} ({target_link}).", peer_id)
         return
     
+    # ==================== ЛОГИ МОДЕРАЦИИ ====================
+    if cmd in ["логи", "modlogs"]:
+        if uid not in ADMIN_IDS:
+            send(api, uid, "⛔ Нет прав.", peer_id); return
+        filter_action = parts[1].upper() if len(parts) > 1 else None
+        with sqlite3.connect(DB_NAME) as c:
+            c.row_factory = sqlite3.Row
+            if filter_action in ("БАН", "КИК", "ВАРН", "МУТ"):
+                rows = c.execute(
+                    "SELECT * FROM mod_logs WHERE action=? ORDER BY id DESC LIMIT 20", (filter_action,)
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT * FROM mod_logs ORDER BY id DESC LIMIT 20"
+                ).fetchall()
+        if not rows:
+            send(api, uid, "📋 Логов модерации нет.", peer_id); return
+        action_emoji = {"БАН": "⚡", "КИК": "🚫", "ВАРН": "💬", "МУТ": "🔇"}
+        lines = ["📋 ЛОГИ МОДЕРАЦИИ (последние 20)\n━━━━━━━━━━━━━━━"]
+        for r in rows:
+            emoji = action_emoji.get(r["action"], "🔹")
+            extra = f" [{r['extra']}]" if r["extra"] else ""
+            lines.append(
+                f"{emoji} {r['action']}{extra} | {r['created_at'][5:16]}\n"
+                f"   👮 {r['admin_name']} → 👤 {r['target_name']}\n"
+                f"   📋 {r['reason'] or '—'}"
+            )
+        send(api, uid, "\n".join(lines), peer_id)
+        return
+
     # ==================== КАСТОМНЫЕ АЛИАСЫ ====================
     if cmd == "cmd":
         if uid not in ADMIN_IDS:
@@ -2809,6 +2923,7 @@ def handle_message_event(api, event):
 
 def main():
     init_db()
+    restore_db()  # Восстанавливаем БД из датасета
     logger.info("🚀 Запуск бота...")
     try:
         vk_session = VkApi(token=VK_TOKEN)
@@ -2838,6 +2953,3 @@ def main():
                 time.sleep(5)
     except Exception as e:
         logger.critical(f"Fatal error: {e}", exc_info=True)
-
-if __name__ == "__main__":
-    main()
