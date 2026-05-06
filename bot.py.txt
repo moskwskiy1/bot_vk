@@ -31,11 +31,14 @@ VIP_LEVELS = {
 
 # ========== ПОЛЕ ЧУДЕС ==========
 
+# ========== ПОЛЕ ЧУДЕС ==========
+# ========== ПОЛЕ ЧУДЕС ==========
+WORDLE_GAME = {}
+
 WORDLE_CATEGORIES = {
     "человек": ["дружба", "любовь", "счастье", "улыбка", "мечта", "радость", "печаль", "надежда", "верность", "доверие"],
     "быт": ["холодильник", "микроволновка", "пылесос", "стиралка", "утюг", "чайник", "сковорода", "полотенце", "швабра", "книга"],
     "мир": ["океан", "пустыня", "джунгли", "вулкан", "гора", "река", "лес", "озеро", "планета", "звезда"],
-    "наука": ["телескоп", "микроскоп", "эксперимент", "формула", "атом", "молекула", "гравитация", "эволюция", "генетика", "космос"],
     "развлечения": ["кинотеатр", "аттракцион", "концерт", "театр", "футбол", "компьютер", "игрушка", "мультик", "квест", "дискотека"]
 }
 
@@ -44,8 +47,12 @@ def start_wordle(user_id, category):
     word = random.choice(words).upper()
     revealed = ["*"] * len(word)
     WORDLE_GAME[user_id] = {
-        "word": word, "revealed": revealed, "wrong_letters": [], "wrong_words": [],
-        "category": category, "started": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        "word": word,
+        "revealed": revealed,
+        "wrong_letters": [],
+        "wrong_words": [],
+        "category": category,
+        "started": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     return word, revealed
 
@@ -739,7 +746,7 @@ def handle_message(api, event):
     cmd = raw_cmd
     parts = [cmd] + parts[arg_offset:]
     if peer_id and peer_id != uid and not text.startswith('/') and not has_payload:
-        if cmd not in ALL_CMDS:
+        if cmd not in ALL_CMDS and uid not in WORDLE_GAME:
             return
     vip_level = get_vip_level(user)
     
@@ -762,7 +769,6 @@ def handle_message(api, event):
         keyboard.add_callback_button("🧑 Человек", color=VkKeyboardColor.PRIMARY, payload={"cmd": "wordle_start", "cat": "человек"})
         keyboard.add_callback_button("🏠 Быт", color=VkKeyboardColor.PRIMARY, payload={"cmd": "wordle_start", "cat": "быт"})
         keyboard.add_callback_button("🌍 Мир", color=VkKeyboardColor.PRIMARY, payload={"cmd": "wordle_start", "cat": "мир"})
-        keyboard.add_callback_button("🔬 Наука", color=VkKeyboardColor.PRIMARY, payload={"cmd": "wordle_start", "cat": "наука"})
         keyboard.add_callback_button("🎮 Развлечения", color=VkKeyboardColor.PRIMARY, payload={"cmd": "wordle_start", "cat": "развлечения"})
         keyboard.add_callback_button("🎲 Случайное", color=VkKeyboardColor.SECONDARY, payload={"cmd": "wordle_start", "cat": "random"})
         send(api, uid, "🎲 ПОЛЕ ЧУДЕС 🎲\n━━━━━━━━━━━━━━━\n\nВыберите категорию и угадывайте слово!\n\n🎯 Угадывайте буквы или всё слово целиком.", peer_id, keyboard=keyboard)
@@ -823,13 +829,13 @@ def handle_message(api, event):
     # ==================== МОЙ НИК ====================
     if cmd in ["мойник", "myname"]:
         nick = user['nickname'] or user['username'] or f"id{uid}"
-        send(api, uid, f"👨 Ваш ник: {nick}", peer_id)
+        send(api, uid, f" Ваш ник: {nick}", peer_id)
         return
     
     # ==================== СМЕНИТЬ НИК ====================
     if cmd in ["сменитьник", "setname", "ник"]:
         if len(parts) < 2:
-            send(api, uid, "💢 Укажите новый ник.\nПример: /сменитьник КрутойИгрок", peer_id)
+            send(api, uid, "💢 Укажите новый ник.\nПример: сменить ник Крутой Игрок", peer_id)
             return
         new_nick = ' '.join(parts[1:])
         max_len = VIP_LEVELS[vip_level]["max_nick_len"]
@@ -845,7 +851,7 @@ def handle_message(api, event):
     
     # ==================== БАЛАНС ====================
     if cmd in ["баланс", "ббаланс", "бб", "balance"]:
-        send(api, uid, f"💸 БАЛАНС\n━━━━━━━━━━━━━━━\n💰 На руках: {fmt_big(user['balance'])}$\n🏛 В банке: {fmt_big(user['bank'])}$\n💵 Депозит: {fmt_big(user['deposit'] or 0)}$\n💳 B-Coins: {fmt_big(user['bcoins'] or 0)}\n📀 Биткоины: {fmt_big(user['bitcoins'] or 0)} BTC\n━━━━━━━━━━━━━━━\n💎 Всего: {fmt_big(float(user['balance'] or 0) + float(user['bank'] or 0) + float(user['deposit'] or 0))}$", peer_id)
+        send(api, uid, f"👫 Ник: {user['nickname'] or user['username'] or f'id{uid}'}\n💰 Деньги: {fmt_big(user['balance'])}$\n🏦 Банк: {fmt_big(user['bank'])}$\n💽 Биткоины: {fmt_big(user['bitcoins'] or 0)} BTC\n━━━━━━━━━━━━━━━\n💳 B-Coins: {fmt_big(user['bcoins'] or 0)}\n💵 Депозит: {fmt_big(user['deposit'] or 0)}$\n💎 Всего: {fmt_big(float(user['balance'] or 0) + float(user['bank'] or 0) + float(user['deposit'] or 0))}$", peer_id)
         return
     
     # ==================== ОПЫТ ====================
@@ -2622,9 +2628,6 @@ def _collect_building(api, uid, peer_id, bkey):
         elif rtype == "btc":
             send(api, uid, f"✅ {bdata['name']}: собрано {rdata[0]} BTC!", peer_id)
 
-def _handle_word_game(api, uid, peer_id, word):
-    pass
-
 def handle_message_event(api, event):
     try:
         obj = event.object
@@ -2657,7 +2660,7 @@ def handle_message_event(api, event):
             elif cat == 'games':
                 text = "2️⃣ ИГРЫ\n━━━━━━━━━━━━━━━\n🎰 казино [ставка] — слоты\n🎲 кубик [ставка] — угадай чётное/нечётное\n🏀 баскетбол [ставка] — бросок мяча\n🎯 дартс [ставка] — точный бросок\n🎳 боулинг [ставка] — удар по кеглям\n🔄 трейд [ставка] — обмен\n\n💡 Во всех играх ставьте любую сумму.\nМинимальная ставка: 10$\nМаксимальная: ваш лимит\n\n⛏ Майнинг:\nкопать — добывай руду\nшахта — уровень шахты\nпродать [руда|всё] — продать руду\nбиткоины — биткоин-кошелёк\nbtc — текущий курс BTC\n\n🥊 Дуэли:\nдуэль @ник [сумма] — вызвать игрока"
             else:
-                text = "3️⃣ РАЗВЛЕЧЕНИЯ\n━━━━━━━━━━━━━━━\n🔮 шар [вопрос] — магический шар\n🎱 выбери [а|б|в] — случайный выбор\n🍀 испытать удачу — проверь удачу\n📊 инфо — статистика сервера\n🔤 игра в слова — игра в слова в чате\nстоп слова — остановить игру\n\n💒 Романтика:\nсвадьба @ник — предложение\nразвод — расторжение брака\nмой брак — инфо о браке\nбраки — список пар\n\n🎭 РП команды:\nрп команды — список РП действий\n\n🛡 VIP статус:\nстатусы — список VIP уровней\nмой статус — ваш текущий статус\n\n📊 Рейтинг:\nрейтинг / продать рейтинг\nтоп — топ игроков чата"
+                text = "3️⃣ РАЗВЛЕЧЕНИЯ\n━━━━━━━━━━━━━━━\n🔮 шар [вопрос] — магический шар\n🎱 выбери [а|б|в] — случайный выбор\n🍀 испытать удачу — проверь удачу\n📊 инфо — статистика сервера\n\n💒 Романтика:\nсвадьба @ник — предложение\nразвод — расторжение брака\nмой брак — инфо о браке\nбраки — список пар\n\n🎭 РП команды:\nрп команды — список РП действий\n\n🛡 VIP статус:\nстатусы — список VIP уровней\nмой статус — ваш текущий статус\n\n📊 Рейтинг:\nрейтинг / продать рейтинг\nтоп — топ игроков чата"
             kb = VkKeyboard(inline=True)
             kb.add_callback_button("1️⃣ Основное", color=VkKeyboardColor.PRIMARY if cat == 'main' else VkKeyboardColor.SECONDARY, payload={"cmd": "help_cat", "cat": "main"})
             kb.add_callback_button("2️⃣ Игры", color=VkKeyboardColor.PRIMARY if cat == 'games' else VkKeyboardColor.SECONDARY, payload={"cmd": "help_cat", "cat": "games"})
