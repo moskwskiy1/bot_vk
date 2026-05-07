@@ -853,7 +853,8 @@ def handle_message(api, event):
             if chat_id and chat_id in MAFIA_GAMES:
                 game = MAFIA_GAMES[chat_id]
                 if game['phase'] == 'night':
-                    player = game['players'].get(uid)
+                    _slot = game.get('uid_to_slot', {}).get(uid)
+                    player = game['players'].get(_slot) if _slot else None
                     if player and player['alive']:
                         try:
                             api.messages.delete(cmids=msg.get('conversation_message_id'), peer_id=peer_id, delete_for_all=1)
@@ -870,13 +871,42 @@ def handle_message(api, event):
     if chat_id and chat_id in MAFIA_GAMES:
         game = MAFIA_GAMES[chat_id]
         if game['phase'] == 'night' and not has_payload:
-            player = game['players'].get(uid)
+            _slot = game.get('uid_to_slot', {}).get(uid)
+            player = game['players'].get(_slot) if _slot else None
             if player and player['alive']:
                 try:
                     api.messages.delete(cmids=msg.get('conversation_message_id'), peer_id=peer_id, delete_for_all=1)
                 except Exception:
                     pass
                 return
+
+    # ── Мафия-чат: пересылка ЛС-сообщений между участниками команды ──
+    if peer_id == uid and not has_payload and not text.startswith('/'):
+        for _cid, _game in MAFIA_GAMES.items():
+            if _game['phase'] not in ('night', 'day'):
+                continue
+            _slot = _game.get('uid_to_slot', {}).get(uid)
+            _player = _game['players'].get(_slot) if _slot else None
+            if _player and _player['alive'] and _player['role'] in ('don', 'mafia'):
+                sender_name = _player['name']
+                role_emoji = '🧛' if _player['role'] == 'don' else '🤵'
+                fwd_text = f"{role_emoji} {sender_name}:\n{text}"
+                forwarded = False
+                for _s2, _p2 in _game['players'].items():
+                    if _s2 != _slot and _p2['alive'] and _p2['role'] in ('don', 'mafia'):
+                        try:
+                            api.messages.send(user_id=_p2['uid'], message=fwd_text, random_id=get_random_id())
+                            forwarded = True
+                        except Exception:
+                            pass
+                if forwarded:
+                    try:
+                        api.messages.send(user_id=uid, message="✅ Сообщение передано команде", random_id=get_random_id())
+                    except Exception:
+                        pass
+                return
+    # ────────────────────────────────────────────────────────────────────
+
     vip_level = get_vip_level(user)
     
     # ==================== МАФИЯ ====================
@@ -892,7 +922,9 @@ def handle_message(api, event):
                 'lobby': {uid: get_display_name(user)},
                 'players': {}, 'day_num': 0,
                 'night_kill': None, 'night_save': None, 'night_block': None,
-                'votes': {}, 'night_timer': None,
+                'night_check': None,
+                'votes': {}, 'night_timer': None, 'vote_timer': None,
+                'chat_id': chat_id, 'peer_id': None,
             }
             kb = mafia_lobby_keyboard(chat_id)
             send(api, uid,
@@ -908,9 +940,10 @@ def handle_message(api, event):
             ADMIN_IDS2 = load_admin_ids()
             if uid != game['host'] and uid not in ADMIN_IDS2:
                 send(api, uid, "❌ Только ведущий или админ может остановить игру.", peer_id); return
-            if game.get('night_timer'):
-                try: game['night_timer'].cancel()
-                except Exception: pass
+            for _timer_key in ('night_timer', 'vote_timer'):
+                if game.get(_timer_key):
+                    try: game[_timer_key].cancel()
+                    except Exception: pass
             del MAFIA_GAMES[chat_id]
             send(api, uid, "🛑 Игра мафии остановлена.", peer_id)
         else:
@@ -2925,15 +2958,29 @@ def mafia_vote_keyboard(game, chat_id):
     kb = VkKeyboard(inline=True)
     alive_list = sorted([(slot, p) for slot, p in game['players'].items() if p['alive']], key=lambda x: x[0])
     for i, (slot, p) in enumerate(alive_list):
-        kb.add_callback_button(f"{slot}. {p['name']}", color=VkKeyboardColor.SECONDARY,
+        votes = p.get('votes', 0)
+        label = f"{slot}. {p['name']}" + (f" ({votes}🗳)" if votes > 0 else "")
+        kb.add_callback_button(label, color=VkKeyboardColor.SECONDARY,
                                payload={'cmd': 'mafia_vote', 'target_slot': slot, 'chat_id': chat_id})
         if i % 2 == 1 and i < len(alive_list) - 1:
             kb.add_line()
+    kb.add_line()
+    kb.add_callback_button('⏭ Пропустить голос', color=VkKeyboardColor.PRIMARY,
+                           payload={'cmd': 'mafia_skip_vote', 'chat_id': chat_id})
     return kb
 
-def mafia_night_action_keyboard(game, chat_id, role):
+def mafia_night_action_keyboard(game, chat_id, role, actor_slot=None):
     kb = VkKeyboard(inline=True)
-    alive_list = sorted([(slot, p) for slot, p in game['players'].items() if p['alive']], key=lambda x: x[0])
+    all_alive = sorted([(slot, p) for slot, p in game['players'].items() if p['alive']], key=lambda x: x[0])
+    # Mafia only sees town players (not themselves, not teammates)
+    if role in ('don', 'mafia'):
+        alive_list = [(slot, p) for slot, p in all_alive
+                      if slot != actor_slot and p['role'] not in ('don', 'mafia')]
+    else:
+        # Other roles exclude only themselves
+        alive_list = [(slot, p) for slot, p in all_alive if slot != actor_slot]
+    if not alive_list:
+        alive_list = all_alive  # fallback: show everyone if filtered list is empty
     for i, (slot, p) in enumerate(alive_list):
         kb.add_callback_button(f"{slot}. {p['name']}", color=VkKeyboardColor.SECONDARY,
                                payload={'cmd': 'mafia_night_action', 'target_slot': slot, 'chat_id': chat_id, 'role': role})
@@ -2983,11 +3030,22 @@ def mafia_start_night(api, peer_id, chat_id):
         return
     game = MAFIA_GAMES[chat_id]
     game['phase'] = 'night'
+    game['peer_id'] = peer_id
+    game['chat_id'] = chat_id
     game['night_end'] = time.time() + MAFIA_NIGHT_DURATION
     game['night_kill'] = None
     game['night_save'] = None
     game['night_block'] = None
+    game['night_check'] = None
     game['night_actions_done'] = set()
+
+    # Cancel any pending vote timer
+    if game.get('vote_timer'):
+        try:
+            game['vote_timer'].cancel()
+        except Exception:
+            pass
+        game['vote_timer'] = None
 
     kb_json = json.dumps({
         "one_time": False, "inline": True,
@@ -3009,13 +3067,13 @@ def mafia_start_night(api, peer_id, chat_id):
     roles_in_game = {p['role'] for p in game['players'].values() if p['alive']}
     action_msgs = []
     if 'don' in roles_in_game or 'mafia' in roles_in_game:
-        action_msgs.append("🤵🏻 Мафия выбрала жертву...")
+        action_msgs.append("🤵🏻 Мафия выбирает жертву...")
     if 'cop' in roles_in_game:
-        action_msgs.append("🕵️‍ Комиссар Каттани уже зарядил свой пистолет...")
+        action_msgs.append("🕵️‍ Комиссар Каттани проводит расследование...")
     if 'doctor' in roles_in_game:
-        action_msgs.append("🤞 Кому-то из игроков повезло")
+        action_msgs.append("🤞 Доктор выбирает кого спасти этой ночью...")
     if 'mistress' in roles_in_game or 'bum' in roles_in_game:
-        action_msgs.append("👨🏼‍💼 Адвокат ищет мафию для защиты...")
+        action_msgs.append("💃 Кто-то из жителей не даст спать одному из игроков...")
 
     def send_action_msgs():
         for amsg in action_msgs:
@@ -3035,16 +3093,71 @@ def mafia_start_night(api, peer_id, chat_id):
     game['night_timer'] = night_timer
     night_timer.start()
 
-    for uid_p, p in game['players'].items():
+    # Send role-specific DM with action keyboard to each alive player
+    for slot, p in game['players'].items():
         if not p['alive']:
             continue
+        uid_p = p['uid']
         role_key = p['role']
         role_info = MAFIA_ROLES_INFO[role_key]
-        role_msg = f"🌙 НОЧЬ {game.get('day_num', 1)}\n━━━━━━━━━━━━━━━\n{role_info['desc']}\n\nНапиши боту в личку для совершения ночного действия."
-        try:
-            api.messages.send(user_id=uid_p, message=role_msg, random_id=get_random_id())
-        except Exception:
-            pass
+        night_num = game.get('day_num', 1)
+
+        if role_key in ('don', 'mafia'):
+            action_kb = mafia_night_action_keyboard(game, chat_id, role_key, actor_slot=slot)
+            teammates = [pp['name'] for ss, pp in game['players'].items()
+                         if ss != slot and pp['role'] in ('don', 'mafia') and pp['alive']]
+            team_line = (f"\n👥 Ваша команда: {', '.join(teammates)}" if teammates else "\n👥 Вы единственный в мафии")
+            role_msg = (f"🌙 НОЧЬ {night_num}\n━━━━━━━━━━━━━━━\n"
+                        f"{role_info['emoji']} {role_info['name'].upper()}\n\n"
+                        f"{role_info['desc']}{team_line}\n\n"
+                        f"🔫 Выберите жертву (мирные жители):")
+            try:
+                api.messages.send(user_id=uid_p, message=role_msg,
+                                  keyboard=action_kb.get_keyboard(), random_id=get_random_id())
+            except Exception:
+                pass
+        elif role_key == 'cop':
+            action_kb = mafia_night_action_keyboard(game, chat_id, role_key, actor_slot=slot)
+            role_msg = (f"🌙 НОЧЬ {night_num}\n━━━━━━━━━━━━━━━\n"
+                        f"{role_info['emoji']} {role_info['name'].upper()}\n\n"
+                        f"{role_info['desc']}\n\n"
+                        f"🔍 Выберите игрока для проверки:")
+            try:
+                api.messages.send(user_id=uid_p, message=role_msg,
+                                  keyboard=action_kb.get_keyboard(), random_id=get_random_id())
+            except Exception:
+                pass
+        elif role_key == 'doctor':
+            action_kb = mafia_night_action_keyboard(game, chat_id, role_key, actor_slot=slot)
+            role_msg = (f"🌙 НОЧЬ {night_num}\n━━━━━━━━━━━━━━━\n"
+                        f"{role_info['emoji']} {role_info['name'].upper()}\n\n"
+                        f"{role_info['desc']}\n\n"
+                        f"💊 Кого спасти этой ночью?")
+            try:
+                api.messages.send(user_id=uid_p, message=role_msg,
+                                  keyboard=action_kb.get_keyboard(), random_id=get_random_id())
+            except Exception:
+                pass
+        elif role_key in ('mistress', 'bum'):
+            action_kb = mafia_night_action_keyboard(game, chat_id, role_key, actor_slot=slot)
+            role_msg = (f"🌙 НОЧЬ {night_num}\n━━━━━━━━━━━━━━━\n"
+                        f"{role_info['emoji']} {role_info['name'].upper()}\n\n"
+                        f"{role_info['desc']}\n\n"
+                        f"🚫 Кого заблокировать этой ночью?")
+            try:
+                api.messages.send(user_id=uid_p, message=role_msg,
+                                  keyboard=action_kb.get_keyboard(), random_id=get_random_id())
+            except Exception:
+                pass
+        else:
+            role_msg = (f"🌙 НОЧЬ {night_num}\n━━━━━━━━━━━━━━━\n"
+                        f"{role_info['emoji']} {role_info['name'].upper()}\n\n"
+                        f"{role_info['desc']}\n\n"
+                        f"😴 Спите спокойно. Ваш ход наступит днём.")
+            try:
+                api.messages.send(user_id=uid_p, message=role_msg, random_id=get_random_id())
+            except Exception:
+                pass
 
 def mafia_end_night(api, peer_id, chat_id):
     if chat_id not in MAFIA_GAMES:
@@ -3063,12 +3176,29 @@ def mafia_end_night(api, peer_id, chat_id):
     kill_target = game.get('night_kill')
     save_target = game.get('night_save')
     block_target = game.get('night_block')
+    check_target = game.get('night_check')
 
     died_names = []
     if kill_target and kill_target != save_target and kill_target != block_target:
         if kill_target in game['players'] and game['players'][kill_target]['alive']:
             game['players'][kill_target]['alive'] = False
             died_names.append(game['players'][kill_target]['name'])
+
+    # Notify cop of check result
+    if check_target and check_target in game['players']:
+        checked_p = game['players'][check_target]
+        is_mafia = checked_p['role'] in ('don', 'mafia')
+        verdict = "🔴 МАФИЯ" if is_mafia else "🔵 МИРНЫЙ"
+        for slot, p in game['players'].items():
+            if p['role'] == 'cop' and p['alive']:
+                try:
+                    api.messages.send(
+                        user_id=p['uid'],
+                        message=f"🕵 Результат проверки:\n{checked_p['name']} — {verdict}",
+                        random_id=get_random_id()
+                    )
+                except Exception:
+                    pass
 
     day_text = (f"🏙 День {game['day_num']}\n"
                 f"Солнце всходит, подсушивая на тротуарах пролитую ночью кровь...\n"
@@ -3095,7 +3225,70 @@ def mafia_end_night(api, peer_id, chat_id):
     time.sleep(2)
     status_text = mafia_build_status_text(game)
     kb = mafia_vote_keyboard(game, chat_id)
-    send(api, 0, status_text + "\n\n⚖️ Кого линчуем? Голосуйте:", peer_id, keyboard=kb)
+    send(api, 0, status_text + "\n\n⚖️ Кого линчуем? Голосуйте!\n⏱ У вас 60 секунд:", peer_id, keyboard=kb)
+
+    # Start 60-second vote timer
+    vote_timer = threading.Timer(60, mafia_auto_resolve_vote, args=[api, peer_id, chat_id])
+    vote_timer.daemon = True
+    game['vote_timer'] = vote_timer
+    vote_timer.start()
+
+
+def mafia_auto_resolve_vote(api, peer_id, chat_id):
+    """Resolve the day vote — called by timer expiry or when all players have voted/skipped."""
+    if chat_id not in MAFIA_GAMES:
+        return
+    game = MAFIA_GAMES[chat_id]
+    # Guard against double execution (timer + last vote firing simultaneously)
+    if game['phase'] != 'day':
+        return
+    game['phase'] = 'resolving'
+
+    # Cancel any running vote timer
+    if game.get('vote_timer'):
+        try:
+            game['vote_timer'].cancel()
+        except Exception:
+            pass
+        game['vote_timer'] = None
+
+    alive_slots = [s for s, p in game['players'].items() if p['alive']]
+
+    # Count only real votes (not skips stored as None)
+    max_votes = max((game['players'][s].get('votes', 0) for s in alive_slots), default=0)
+    candidates = [s for s in alive_slots
+                  if game['players'][s].get('votes', 0) == max_votes and max_votes > 0]
+
+    # Reset vote counters
+    for p in game['players'].values():
+        p['votes'] = 0
+    game['votes'] = {}
+
+    if len(candidates) == 1:
+        lynched_slot = candidates[0]
+        lynched = game['players'][lynched_slot]
+        if lynched['role'] == 'kamikaze':
+            lynched['alive'] = False
+            send(api, 0,
+                 f"⚖️ Время вышло!\n💀 {lynched['name']} повешен! Но это был 🧨 Камикадзе!\n"
+                 f"Он забирает кого-то с собой в могилу...", peer_id)
+        else:
+            lynched['alive'] = False
+            role_info = MAFIA_ROLES_INFO.get(lynched['role'], {})
+            send(api, 0,
+                 f"⚖️ Время вышло!\n💀 Город повесил {lynched['name']}!\n"
+                 f"Его роль: {role_info.get('emoji','')} {role_info.get('name','?')}", peer_id)
+    else:
+        send(api, 0, "⏱ Время голосования истекло! Ничья — никто не повешен.", peer_id)
+
+    result = mafia_check_win(game)
+    if result:
+        time.sleep(1)
+        mafia_game_over(api, peer_id, chat_id, result)
+        return
+
+    time.sleep(2)
+    mafia_start_night(api, peer_id, chat_id)
 
 def mafia_game_over(api, peer_id, chat_id, winner):
     if chat_id not in MAFIA_GAMES:
@@ -3446,6 +3639,10 @@ def handle_message_event(api, event):
             ADMIN_IDS3 = load_admin_ids()
             if uid != game['host'] and uid not in ADMIN_IDS3:
                 answer("❌ Только ведущий может отменить"); return
+            for _tk in ('night_timer', 'vote_timer'):
+                if game.get(_tk):
+                    try: game[_tk].cancel()
+                    except Exception: pass
             del MAFIA_GAMES[chat_id_g]
             answer("🛑 Лобби отменено")
             try:
@@ -3483,22 +3680,69 @@ def handle_message_event(api, event):
                                   keyboard=None)
             except Exception:
                 pass
-            for slot, p in slot_players.items():
-                role_key = p['role']
-                role_info = MAFIA_ROLES_INFO[role_key]
-                role_msg = (f"🎭 ВАША РОЛЬ\n━━━━━━━━━━━━━━━\n"
-                            f"{role_info['emoji']} {role_info['name'].upper()}\n\n"
-                            f"{role_info['desc']}\n\n"
-                            f"━━━━━━━━━━━━━━━\n"
-                            f"{'🔴 Вы играете за МАФИЮ' if role_info['team'] == 'mafia' else '🔵 Вы играете за МИРНЫХ'}")
-                try:
-                    api.messages.send(user_id=p['uid'], message=role_msg, random_id=get_random_id())
-                except Exception:
-                    pass
-            import time as _t
-            _t.sleep(3)
             chat_peer_id = peer_id
-            mafia_start_night(api, chat_peer_id, chat_id_g)
+            def _begin_night():
+                time.sleep(2)
+                mafia_start_night(api, chat_peer_id, chat_id_g)
+            threading.Thread(target=_begin_night, daemon=True).start()
+        elif cmd == 'mafia_night_action':
+            chat_id_g = payload.get('chat_id')
+            target_slot = payload.get('target_slot')
+            role = payload.get('role')
+            if not chat_id_g or chat_id_g not in MAFIA_GAMES:
+                answer("❌ Игра не найдена"); return
+            game = MAFIA_GAMES[chat_id_g]
+            if game['phase'] != 'night':
+                answer("❌ Сейчас не ночь"); return
+            actor_slot = game.get('uid_to_slot', {}).get(uid)
+            if not actor_slot:
+                answer("❌ Вы не в игре"); return
+            actor = game['players'].get(actor_slot)
+            if not actor or not actor['alive']:
+                answer("❌ Вы выбыли из игры"); return
+            if actor['role'] != role:
+                answer("❌ Неверная роль"); return
+            if target_slot not in game['players']:
+                answer("❌ Игрок не найден"); return
+            target = game['players'][target_slot]
+            if not target['alive']:
+                answer("❌ Игрок уже мёртв"); return
+            if role in ('don', 'mafia'):
+                game['night_kill'] = target_slot
+                answer(f"🔫 Цель выбрана: {target['name']}")
+            elif role == 'cop':
+                game['night_check'] = target_slot
+                answer(f"🔍 Проверяете: {target['name']}")
+            elif role == 'doctor':
+                game['night_save'] = target_slot
+                answer(f"💊 Спасаете: {target['name']}")
+            elif role in ('mistress', 'bum'):
+                game['night_block'] = target_slot
+                answer(f"🚫 Блокируете: {target['name']}")
+            else:
+                answer("❌ Ваша роль не действует ночью")
+        elif cmd == 'mafia_skip_vote':
+            chat_id_g = payload.get('chat_id')
+            if not chat_id_g or chat_id_g not in MAFIA_GAMES:
+                answer("❌ Игра не найдена"); return
+            game = MAFIA_GAMES[chat_id_g]
+            if game['phase'] != 'day':
+                answer("❌ Голосование только днём"); return
+            voter_slot = game.get('uid_to_slot', {}).get(uid)
+            if not voter_slot:
+                answer("❌ Вы не участник игры"); return
+            if not game['players'].get(voter_slot, {}).get('alive'):
+                answer("❌ Мёртвые не голосуют"); return
+            # Remove previous real vote if any
+            old_vote = game['votes'].get(voter_slot)
+            if isinstance(old_vote, int) and old_vote in game['players']:
+                game['players'][old_vote]['votes'] = max(0, game['players'][old_vote].get('votes', 0) - 1)
+            game['votes'][voter_slot] = None  # None = skipped
+            answer("⏭ Вы пропустили голос")
+            alive_count = sum(1 for p in game['players'].values() if p['alive'])
+            votes_cast = len(game['votes'])
+            if votes_cast >= alive_count:
+                mafia_auto_resolve_vote(api, peer_id, chat_id_g)
         elif cmd == 'mafia_vote':
             chat_id_g = payload.get('chat_id')
             target_slot = payload.get('target_slot')
@@ -3518,8 +3762,9 @@ def handle_message_event(api, event):
                 answer("❌ Нельзя голосовать за мёртвого"); return
             if voter_slot == target_slot:
                 answer("❌ Нельзя голосовать за себя"); return
+            # Remove old vote (real or skip)
             old_vote = game['votes'].get(voter_slot)
-            if old_vote:
+            if isinstance(old_vote, int) and old_vote in game['players']:
                 game['players'][old_vote]['votes'] = max(0, game['players'][old_vote].get('votes', 0) - 1)
             game['votes'][voter_slot] = target_slot
             game['players'][target_slot]['votes'] = game['players'][target_slot].get('votes', 0) + 1
@@ -3528,38 +3773,7 @@ def handle_message_event(api, event):
             alive_count = sum(1 for p in game['players'].values() if p['alive'])
             votes_cast = len(game['votes'])
             if votes_cast >= alive_count:
-                max_votes = max(game['players'][s].get('votes', 0) for s in game['players'] if game['players'][s]['alive'])
-                candidates = [s for s in game['players'] if game['players'][s]['alive'] and game['players'][s].get('votes', 0) == max_votes]
-                if len(candidates) == 1:
-                    lynched_slot = candidates[0]
-                    lynched = game['players'][lynched_slot]
-                    if lynched['role'] == 'kamikaze':
-                        lynched['alive'] = False
-                        send(api, 0, f"💀 {lynched['name']} повешен! Но это был 🧨 Камикадзе!\nОн выбирает кого забрать с собой...", peer_id)
-                    else:
-                        lynched['alive'] = False
-                        role_info = MAFIA_ROLES_INFO.get(lynched['role'], {})
-                        send(api, 0, f"💀 Город повесил {lynched['name']}!\nЕго роль: {role_info.get('emoji','')} {role_info.get('name','?')}", peer_id)
-                    for p in game['players'].values():
-                        p['votes'] = 0
-                    game['votes'] = {}
-                    result = mafia_check_win(game)
-                    if result:
-                        import time as _t2
-                        _t2.sleep(1)
-                        mafia_game_over(api, peer_id, chat_id_g, result)
-                        return
-                    import time as _t3
-                    _t3.sleep(2)
-                    mafia_start_night(api, peer_id, chat_id_g)
-                else:
-                    for p in game['players'].values():
-                        p['votes'] = 0
-                    game['votes'] = {}
-                    send(api, 0, "⚖️ Ничья! Никто не повешен. Наступает ночь...", peer_id)
-                    import time as _t4
-                    _t4.sleep(2)
-                    mafia_start_night(api, peer_id, chat_id_g)
+                mafia_auto_resolve_vote(api, peer_id, chat_id_g)
     except Exception as e:
         logger.error(f"handle_message_event error: {e}")
 
