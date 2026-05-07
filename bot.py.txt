@@ -141,10 +141,10 @@ CARS = {"1": {"name": "Самокат", "price": 10_000, "emoji": "🛴", "photo
 PHONES = {"1": {"name": "Кнопочный Nokia", "price": 10_000, "emoji": "📟"}, "2": {"name": "Samsung Galaxy", "price": 300_000, "emoji": "📱"}, "3": {"name": "iPhone 15 Pro", "price": 1_500_000, "emoji": "📲"}}
 PLANES = {"1": {"name": "Cessna 172", "price": 5_000_000, "emoji": "🛩"}, "2": {"name": "Boeing 737", "price": 50_000_000, "emoji": "✈"}, "3": {"name": "Частный джет", "price": 500_000_000, "emoji": "🛫"}}
 YACHTS = {"1": {"name": "Моторная лодка", "price": 1_000_000, "emoji": "🚤"}, "2": {"name": "Яхта", "price": 20_000_000, "emoji": "🛥"}, "3": {"name": "Суперяхта", "price": 200_000_000, "emoji": "🚢"}}
-HELICOPTERS = {"1": {"name": "Robinson R22", "price": 2_000_000, "emoji": "🚁"}, "2": {"name": "Bell 407", "price": 30_000_000, "emoji": "🚁"}, "3": {"name": "VIP вертолёт", "price": 150_000_000, "emoji": "🚁"}}
+HELICOPTERS = {"1": {"name": "Robinson R22", "price": 2_000_000, "emoji": "🚁"}, "2": {"name": "Bell 407", "price": 30_000_000, "emoji": "🚁"}, "3": {"name": "VIP вертолет", "price": 150_000_000, "emoji": "🚁"}}
 HOUSES = {"1": {"name": "Комната в общежитии", "price": 100_000, "emoji": "🏠"}, "2": {"name": "Квартира", "price": 1_000_000, "emoji": "🏢"}, "3": {"name": "Особняк", "price": 100_000_000, "emoji": "🏰"}}
 
-PROPERTY_TYPES = {"машина": ("cars", CARS, "🚗"), "телефон": ("phones", PHONES, "📱"), "самолёт": ("planes", PLANES, "✈"), "яхта": ("yachts", YACHTS, "🛥"), "вертолёт": ("helicopters", HELICOPTERS, "🚁"), "дом": ("houses", HOUSES, "🏠")}
+PROPERTY_TYPES = {"машина": ("cars", CARS, "🚗"), "телефон": ("phones", PHONES, "📱"), "самолет": ("planes", PLANES, "✈"), "яхта": ("yachts", YACHTS, "🛥"), "вертолет": ("helicopters", HELICOPTERS, "🚁"), "дом": ("houses", HOUSES, "🏠")}
 
 # ========== РУДЫ ==========
 ORE_TYPES = {"уголь": {"emoji": "🪨", "base_price": 100, "mine_chance": 50}, "железо": {"emoji": "⚙️", "base_price": 500, "mine_chance": 30}, "золото": {"emoji": "🥇", "base_price": 2_000, "mine_chance": 15}, "алмаз": {"emoji": "💎", "base_price": 10_000, "mine_chance": 5}}
@@ -176,8 +176,8 @@ CASES = {
 MULTI_WORD_CMDS = {
     "мой ник": "мойник", "мой статус": "мойстатус", "мой лимит": "мойлимит", "мой брак": "мойбрак",
     "мой бизнес": "мойбизнес", "мой генератор": "мойгенератор", "мой карьер": "мойкарьер",
-    "мой дом": "мойдом", "мой телефон": "мойтелефон", "мой самолёт": "мойсамолёт", "мой самолет": "мойсамолёт",
-    "мой вертолёт": "мойвертолёт", "мой вертолет": "мойвертолёт", "моя ферма": "мояферма",
+    "мой дом": "мойдом", "мой телефон": "мойтелефон", "мой самолет": "мойсамолет", "мой самолет": "мойсамолет",
+    "мой вертолет": "мойвертолет", "мой вертолет": "мойвертолет", "моя ферма": "мояферма",
     "моя машина": "моямашина", "моя яхта": "мояяхта", "моё дерево": "моёдерево", "мое дерево": "моёдерево",
     "мой сад": "мойсад", "моё имущество": "моёимущество", "мое имущество": "моёимущество",
     "сменить ник": "сменитьник", "поле чудес": "поле чудес","испытать удачу": "испытатьудачу",
@@ -190,7 +190,7 @@ MULTI_WORD_CMDS = {
     "собрать ферму": "собратьферму", "собрать карьер": "собратькарьер",
     "собрать дерево": "собратьдерево", "собрать сад": "собратьсад",
     "создать зелье": "создатьзелье", "выпить зелье": "использоватьзелье",
-    "использовать зелье": "использоватьзелье", "ежедневный бонус": "ежедневный",
+    "использовать зелье": "использоватьзелье", 
     "денежное дерево": "денежноедерево", "курс руды": "курсруды", "продать рейтинг": "продатьрейтинг",
     "магический шар": "шар", "мой чат": "беседа", "рп команды": "рпкоманды", "топ баланс": "топ",
     "купить кейс": "buycase", "открыть кейс": "opencase",
@@ -202,14 +202,14 @@ ALL_CMDS = {
     "меню","профиль","инфа","info","мойник","myname","сменитьник","setname","ник",
     "баланс","ббаланс","бб","balance","опыт","exp","уровень","энергия","energy",
     "мойлимит","лимит","mylimit","рейтинг","репутация","продатьрейтинг","sellrating",
-    "топ","top","бонус","bonus","ежедневный","daily","ежедневныйбонус",
+    "топ","top","бонус","bonus",
     "банк","депозит","казна","treasury","дать","pay","перевод",
     "биткоин","btc","bitcoin","биткоины","ограбитьмэрию","ограбмэрию","мэрия",
     "шахта","mine_info","копать","dig","mine","продать","sellore","курсруды","рудакурс","orerate",
     "инвентарь","inventory","инв","машины","cars","buycar","телефоны","phones","buyphone",
-    "самолёты","planes","buyplane","яхты","yachts","buyyacht","вертолёты","helicopters","buyhelicopter",
+    "самолеты","planes","buyplane","яхты","yachts","buyyacht","вертолеты","helicopters","buyhelicopter",
     "дома","houses","buyhouse","моёимущество","имущество","property","мойдом",
-    "моямашина","мойтелефон","мойсамолёт","мойсамолет","мояяхта","мойвертолёт","мойвертолет",
+    "моямашина","мойтелефон","мойсамолет","мойсамолет","мояяхта","мойвертолет","мойвертолет",
     "shop","магазин","buy","статусы","vipinfo","статус","мойстатус","mystatus",
     "казино","casino","slots","спин","кубик","dice","баскетбол","basketball",
     "дартс","darts","боулинг","bowling","трейд","trade","шар","ball","магическийшар",
@@ -361,6 +361,7 @@ def init_db():
             ("day_sent", "REAL DEFAULT 0"), ("warns", "INTEGER DEFAULT 0"), ("warn_reasons", "TEXT DEFAULT '[]'"),
             ("muted_until", "TEXT"), ("cases_inventory", "TEXT DEFAULT '{}'"), ("married_to", "INTEGER DEFAULT NULL"),
             ("married_at", "TEXT DEFAULT NULL"), ("proposals_in", "TEXT DEFAULT '[]'"), ("used_promos", "TEXT DEFAULT '[]'"),
+            ("last_mine", "TEXT"),
         ]
         for col, definition in new_cols:
             try:
@@ -467,21 +468,27 @@ def db_inc(uid, **kwargs):
 
 def update_balance(uid, amount):
     db_inc(uid, balance=amount)
+    backup_db()
 
 def update_bank(uid, amount):
     db_inc(uid, bank=amount)
+    backup_db()
 
 def update_deposit(uid, amount):
     db_inc(uid, deposit=amount)
+    backup_db()
 
 def update_bcoins(uid, amount):
     db_inc(uid, bcoins=amount)
+    backup_db()
 
 def update_bitcoins(uid, amount):
     db_inc(uid, bitcoins=amount)
+    backup_db()
 
 def update_reputation(uid, amount):
     db_inc(uid, reputation=amount)
+    backup_db()
 
 def update_experience(uid, amount, vip_level=0):
     mult = VIP_LEVELS[vip_level]["exp_mult"]
@@ -494,6 +501,7 @@ def update_experience(uid, amount, vip_level=0):
             if new_level > user[1]:
                 c.execute("UPDATE users SET level=? WHERE id=?", (new_level, uid))
         c.commit()
+    backup_db()
 
 def get_vip_level(user):
     vl = user['vip_level'] if user['vip_level'] else 0
@@ -888,8 +896,8 @@ def handle_message(api, event):
     if cmd in ["меню", "профиль", "инфа", "info"]:
         profile = get_user_profile(api, user)
         kb = VkKeyboard(inline=True)
-        kb.add_callback_button("📦 Имущество", color=VkKeyboardColor.SECONDARY, payload={"cmd": "menu_tab", "tab": "property"})
-        kb.add_callback_button("🧳 Бизнесы", color=VkKeyboardColor.SECONDARY, payload={"cmd": "menu_tab", "tab": "businesses"})
+        kb.add_callback_button("📦 Имущество", color=VkKeyboardColor.SECONDARY, payload={"cmd": "menu_tab", "tab": "property", "owner": uid})
+        kb.add_callback_button("🧳 Бизнесы", color=VkKeyboardColor.SECONDARY, payload={"cmd": "menu_tab", "tab": "businesses", "owner": uid})
         send(api, uid, profile, peer_id, keyboard=kb)
         return
     
@@ -1023,33 +1031,6 @@ def handle_message(api, event):
         send(api, uid, f"🎁✨ БОНУС ПОЛУЧЕН! ✨🎁\n\n💰 +{fmt_big(bonus)}$\n🌟 +25 опыта\n\n⏳ Следующий бонус через {hours} ч.", peer_id)
         return
     
-    # ==================== ЕЖЕДНЕВНЫЙ БОНУС ====================
-    if cmd in ["ежедневный", "daily", "ежедневныйбонус"]:
-        ok, remaining = can_get_daily(uid)
-        if not ok:
-            send(api, uid, f"💈 Ежедневный бонус будет через: {fmt_time(remaining)}", peer_id)
-            return
-        if vip_level == 0:
-            bonus = random.randint(200_000, 500_000)
-            extra = ""
-        elif vip_level == 1:
-            bonus = random.randint(500_000, 1_500_000)
-            extra = "\n💎 Бонус Standard VIP!"
-        elif vip_level == 2:
-            bonus = random.randint(2_000_000, 5_000_000)
-            btc = round(random.uniform(0.01, 0.05), 3)
-            update_bitcoins(uid, btc)
-            extra = f"\n🥇 Уникальный Gold бонус! +{btc} BTC"
-        else:
-            bonus = random.randint(5_000_000, 15_000_000)
-            btc = round(random.uniform(0.05, 0.2), 3)
-            update_bitcoins(uid, btc)
-            extra = f"\n👑 Platinum VIP бонус! +{btc} BTC"
-        update_balance(uid, bonus)
-        update_experience(uid, 100, vip_level)
-        db_set(uid, last_daily=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        send(api, uid, f"💈 ЕЖЕДНЕВНЫЙ БОНУС! 💈\n\n💰 +{fmt_big(bonus)}$\n🌟 +100 опыта{extra}\n\n⏳ Следующий через 24 ч.", peer_id)
-        return
     
     # ==================== БАНК ====================
     if cmd == "банк":
@@ -1254,7 +1235,11 @@ def handle_message(api, event):
         gold_ore = get_user_ore(user, "золото")
         diamond = get_user_ore(user, "алмаз")
         e = user['energy'] or 0
-        send(api, uid, f"⛏ ШАХТА\n━━━━━━━━━━━━━━━\n⚡ Энергия: {e}/{VIP_LEVELS[vip_level]['max_energy']}\n\n🪨 Уголь: {fmt_big(coal)} ед.\n⚙️ Железо: {fmt_big(iron)} ед.\n🥇 Золото: {fmt_big(gold_ore)} ед.\n💎 Алмаз: {fmt_big(diamond)} ед.\n\n⛏ Копать: /копать\n💰 Продать: /продать [руда] [кол-во|всё]\n📊 Курс: /курсруды", peer_id)
+        kb = VkKeyboard(inline=True)
+        kb.add_callback_button("⛏ Копать", color=VkKeyboardColor.POSITIVE, payload={"cmd": "mine_dig", "owner": uid})
+        kb.add_line()
+        kb.add_callback_button("📊 Курс руды", color=VkKeyboardColor.SECONDARY, payload={"cmd": "mine_rate", "owner": uid})
+        send(api, uid, f"⛏ ШАХТА\n━━━━━━━━━━━━━━━\n⚡ Энергия: {e}/{VIP_LEVELS[vip_level]['max_energy']}\n\n🪨 Уголь: {fmt_big(coal)} ед.\n⚙️ Железо: {fmt_big(iron)} ед.\n🥇 Золото: {fmt_big(gold_ore)} ед.\n💎 Алмаз: {fmt_big(diamond)} ед.\n\n💰 Продать: /продать [руда] [кол-во|всё]", peer_id, keyboard=kb)
         return
     
     # ==================== КОПАТЬ ====================
@@ -1394,7 +1379,7 @@ def handle_message(api, event):
         return _buy_property(api, uid, user, peer_id, parts[1], "phones", PHONES, "телефон", "buyphone")
     
     # ==================== САМОЛЁТЫ ====================
-    if cmd in ["самолёты", "planes"]:
+    if cmd in ["самолеты", "planes"]:
         text = "✈ ДОСТУПНЫЕ САМОЛЁТЫ ✈\n\n"
         for key, p in PLANES.items():
             text += f"{key}. {p['emoji']} {p['name']} — {fmt_big(p['price'])}$\n"
@@ -1403,7 +1388,7 @@ def handle_message(api, event):
         return
     
     if cmd == "buyplane" and len(parts) >= 2:
-        return _buy_property(api, uid, user, peer_id, parts[1], "planes", PLANES, "самолёт", "buyplane")
+        return _buy_property(api, uid, user, peer_id, parts[1], "planes", PLANES, "самолет", "buyplane")
     
     # ==================== ЯХТЫ ====================
     if cmd in ["яхты", "yachts"]:
@@ -1418,7 +1403,7 @@ def handle_message(api, event):
         return _buy_property(api, uid, user, peer_id, parts[1], "yachts", YACHTS, "яхта", "buyyacht")
     
     # ==================== ВЕРТОЛЁТЫ ====================
-    if cmd in ["вертолёты", "helicopters"]:
+    if cmd in ["вертолеты", "helicopters"]:
         text = "🚁 ДОСТУПНЫЕ ВЕРТОЛЁТЫ 🚁\n\n"
         for key, p in HELICOPTERS.items():
             text += f"{key}. {p['emoji']} {p['name']} — {fmt_big(p['price'])}$\n"
@@ -1427,7 +1412,7 @@ def handle_message(api, event):
         return
     
     if cmd == "buyhelicopter" and len(parts) >= 2:
-        return _buy_property(api, uid, user, peer_id, parts[1], "helicopters", HELICOPTERS, "вертолёт", "buyhelicopter")
+        return _buy_property(api, uid, user, peer_id, parts[1], "helicopters", HELICOPTERS, "вертолет", "buyhelicopter")
     
     # ==================== ДОМА ====================
     if cmd in ["дома", "houses"]:
@@ -1445,7 +1430,7 @@ def handle_message(api, event):
     if cmd in ["моёимущество", "имущество", "property"]:
         user = get_user(uid)
         text = "🏘 МОЁ ИМУЩЕСТВО 🏘\n━━━━━━━━━━━━━━━\n"
-        prop_map = [("cars", CARS, "🚗 Машины"), ("phones", PHONES, "📱 Телефоны"), ("planes", PLANES, "✈ Самолёты"), ("yachts", YACHTS, "🛥 Яхты"), ("helicopters", HELICOPTERS, "🚁 Вертолёты"), ("houses", HOUSES, "🏠 Дома")]
+        prop_map = [("cars", CARS, "🚗 Машины"), ("phones", PHONES, "📱 Телефоны"), ("planes", PLANES, "✈ Самолеты"), ("yachts", YACHTS, "🛥 Яхты"), ("helicopters", HELICOPTERS, "🚁 Вертолеты"), ("houses", HOUSES, "🏠 Дома")]
         has_any = False
         for col, catalog, label in prop_map:
             items = get_user_items(user, col)
@@ -1463,7 +1448,7 @@ def handle_message(api, event):
         return
     
     # Алиасы отдельных видов имущества
-    if cmd in ["мояmашина", "мояmашина", "мойдом", "моятелефон", "мойсамолёт", "мояяхта", "мойвертолёт", "моя машина", "мой дом", "мой телефон", "мой самолет", "моя яхта", "мой вертолет"]:
+    if cmd in ["мояmашина", "мояmашина", "мойдом", "моятелефон", "мойсамолет", "мояяхта", "мойвертолет", "моя машина", "мой дом", "мой телефон", "мой самолет", "моя яхта", "мой вертолет"]:
         return handle_message_shortcut_property(api, uid, user, peer_id, cmd)
     
     # ==================== МОЙ ДОМ / МАШИНА / ЭТС ====================
@@ -1476,13 +1461,13 @@ def handle_message(api, event):
     if cmd in ["мойтелефон"]:
         _show_single_property(api, uid, user, peer_id, "phones", PHONES, "📱 МОЙ ТЕЛЕФОН")
         return
-    if cmd in ["мойсамолёт", "мойсамолет"]:
+    if cmd in ["мойсамолет", "мойсамолет"]:
         _show_single_property(api, uid, user, peer_id, "planes", PLANES, "✈ МОЙ САМОЛЁТ")
         return
     if cmd in ["мояяхта"]:
         _show_single_property(api, uid, user, peer_id, "yachts", YACHTS, "🛥 МОЯ ЯХТА")
         return
-    if cmd in ["мойвертолёт", "мойвертолет"]:
+    if cmd in ["мойвертолет", "мойвертолет"]:
         _show_single_property(api, uid, user, peer_id, "helicopters", HELICOPTERS, "🚁 МОЙ ВЕРТОЛЁТ")
         return
     
@@ -1584,24 +1569,27 @@ def handle_message(api, event):
         symbols = ["🍒", "🍋", "🍊", "🍇", "🔔", "⭐", "7️⃣"]
         res = [random.choice(symbols) for _ in range(3)]
         bonus_chance = VIP_LEVELS[vip_level]["game_bonus"]
+        _pname, _plink = get_vk_link(api, uid)
+        _mention = f"[{_plink.replace('vk.com/', 'https://vk.com/')}|{_pname}]"
         if res[0] == res[1] == res[2]:
-            mult = 10 if res[0] == "7️⃣" else 5
+            mult = round(random.uniform(3.0, 5.0), 2)
             win = bet * mult
             update_balance(uid, win - bet)
             db_inc(uid, games_played=1, total_won=win)
             update_experience(uid, 30, vip_level)
-            send(api, uid, f"🎰 {res[0]} | {res[1]} | {res[2]}\n💰 ДЖЕКПОТ! ×{mult}\n💵 Выигрыш: {fmt_big(win)}$", peer_id)
+            send(api, uid, f"🎰 {res[0]} | {res[1]} | {res[2]}\n{_mention}, вы выиграли {fmt_big(win)}$ (×{mult}) 🤑", peer_id)
         elif res[0] == res[1] or res[1] == res[2] or res[0] == res[2]:
-            win = bet * 2
+            mult = round(random.uniform(1.5, 2.5), 2)
+            win = bet * mult
             update_balance(uid, win - bet)
             db_inc(uid, games_played=1, total_won=win)
             update_experience(uid, 10, vip_level)
-            send(api, uid, f"🎰 {res[0]} | {res[1]} | {res[2]}\n✨ Пара! ×2\n💵 Выигрыш: {fmt_big(win)}$", peer_id)
+            send(api, uid, f"🎰 {res[0]} | {res[1]} | {res[2]}\n{_mention}, вы выиграли {fmt_big(win)}$ (×{mult}) 🤑", peer_id)
         else:
             update_balance(uid, -bet)
             db_inc(uid, games_played=1, total_lost=bet)
             update_experience(uid, 5, vip_level)
-            send(api, uid, f"🎰 {res[0]} | {res[1]} | {res[2]}\n💔 Проигрыш\n💸 -{fmt_big(bet)}$", peer_id)
+            send(api, uid, f"🎰 {res[0]} | {res[1]} | {res[2]}\n{_mention}, вы проиграли {fmt_big(bet)}$ 😢", peer_id)
         return
     
     # ==================== КУБИК ====================
@@ -2235,10 +2223,11 @@ def handle_message(api, event):
     # ==================== ПОМОЩЬ ====================
     if cmd in ["help", "команды", "помощь"]:
         kb = VkKeyboard(inline=True)
-        kb.add_callback_button("1️⃣ Основное", color=VkKeyboardColor.PRIMARY, payload={"cmd": "help_cat", "cat": "main"})
-        kb.add_callback_button("2️⃣ Игры", color=VkKeyboardColor.POSITIVE, payload={"cmd": "help_cat", "cat": "games"})
-        kb.add_callback_button("3️⃣ Развлечения", color=VkKeyboardColor.SECONDARY, payload={"cmd": "help_cat", "cat": "fun"})
-        send(api, uid, "🎮 [club238368566|ВК], выберите категорию:\n\n1️⃣ Основное\n2️⃣ Игры\n3️⃣ Развлекательное", peer_id, keyboard=kb)
+        kb.add_callback_button("1️⃣ Основное", color=VkKeyboardColor.PRIMARY, payload={"cmd": "help_cat", "cat": "main", "owner": uid})
+        kb.add_callback_button("2️⃣ Игры", color=VkKeyboardColor.POSITIVE, payload={"cmd": "help_cat", "cat": "games", "owner": uid})
+        kb.add_callback_button("3️⃣ Развлечения", color=VkKeyboardColor.SECONDARY, payload={"cmd": "help_cat", "cat": "fun", "owner": uid})
+        _help_nick = user['nickname'] or user['username'] or f"id{uid}"
+        send(api, uid, f"🎮 {_help_nick}, выберите категорию:\n\n1️⃣ Основное\n2️⃣ Игры\n3️⃣ Развлекательное", peer_id, keyboard=kb)
         return
     
     # ==================== ADMIN COMMANDS ====================
@@ -2546,6 +2535,11 @@ def handle_message(api, event):
         if not target_user:
             add_or_update_user(api, target_id)
         db_set(target_id, is_blocked=1)
+        if chat_id:
+            try:
+                api.messages.removeChatUser(chat_id=chat_id, member_id=target_id)
+            except Exception as _ke:
+                logger.warning(f"Kick on ban failed: {_ke}")
         admin_name, admin_link = get_vk_link(api, uid)
         target_name, target_link = get_vk_link(api, target_id)
         admin_mention = f"[{admin_link.replace('vk.com/', 'https://vk.com/')}|{admin_name}]"
@@ -2768,17 +2762,21 @@ def handle_message_event(api, event):
     try:
         cmd = payload.get('cmd')
         if cmd == 'help_cat':
+            owner = payload.get('owner')
+            if owner and int(owner) != int(uid):
+                answer("❌ Это не ваша помощь")
+                return
             cat = payload.get('cat', 'main')
             if cat == 'main':
-                text = "1️⃣ ОСНОВНОЕ\n━━━━━━━━━━━━━━━\n👤 Профиль:\nменю / баланс / опыт / энергия\nмой ник / сменить ник [ник]\nмой статус / статусы / мой лимит\n\n🎁 Бонусы:\nбонус — каждые 1.5–3 ч\nежедневный — раз в 24 ч\n\n🏦 Финансы:\nбанк / депозит / биткоин / казна\nдать @durov [сумма] / рейтинг\nкурс руды / инвентарь\n\n⛏ Добыча:\nшахта / копать / продать [руда]\n\n🏘 Имущество:\nмашины / телефоны / самолёты\nяхты / вертолёты / дома\nмоё имущество\n\n🏢 Постройки:\nбизнес / генератор / ферма\nкарьер / денежное дерево / сад\nзелья / ограбить мэрию\n\n💒 Браки: свадьба / развод / мой брак\n📦 Кейсы: кейсы / buycase / opencase\n👑 Топ: топ [баланс|рейтинг|опыт|btc]"
+                text = "1️⃣ ОСНОВНОЕ\n━━━━━━━━━━━━━━━\n👤 Профиль:\nменю / баланс / опыт / энергия\nмой ник / сменить ник [ник]\nмой статус / статусы / мой лимит\n\n🎁 Бонусы:\nбонус — каждые 1.5–3 ч\n\n🏦 Финансы:\nбанк / депозит / биткоин / казна\nдать @durov [сумма] / рейтинг\nкурс руды / инвентарь\n\n⛏ Добыча:\nшахта / копать / продать [руда]\n\n🏘 Имущество:\nмашины / телефоны / самолеты\nяхты / вертолеты / дома\nмоё имущество\n\n🏢 Постройки:\nбизнес / генератор / ферма\nкарьер / денежное дерево / сад\nзелья / ограбить мэрию\n\n💒 Браки: свадьба / развод / мой брак\n📦 Кейсы: кейсы / buycase / opencase\n👑 Топ: топ [баланс|рейтинг|опыт|btc]"
             elif cat == 'games':
                 text = "2️⃣ ИГРЫ\n━━━━━━━━━━━━━━━\n🎰 казино [ставка] — слоты\n🎲 кубик [ставка] — угадай чётное/нечётное\n🏀 баскетбол [ставка] — бросок мяча\n🎯 дартс [ставка] — точный бросок\n🎳 боулинг [ставка] — удар по кеглям\n🔄 трейд [ставка] — обмен\n\n💡 Во всех играх ставьте любую сумму.\nМинимальная ставка: 10$\nМаксимальная: ваш лимит\n\n⛏ Майнинг:\nкопать — добывай руду\nшахта — уровень шахты\nпродать [руда|всё] — продать руду\nбиткоины — биткоин-кошелёк\nbtc — текущий курс BTC\n\n🥊 Дуэли:\nдуэль @ник [сумма] — вызвать игрока"
             else:
                 text = "3️⃣ РАЗВЛЕЧЕНИЯ\n━━━━━━━━━━━━━━━\n🔮 шар [вопрос] — магический шар\n🎱 выбери [а|б|в] — случайный выбор\n🍀 испытать удачу — проверь удачу\n📊 инфо — статистика сервера\n\n💒 Романтика:\nсвадьба @ник — предложение\nразвод — расторжение брака\nмой брак — инфо о браке\nбраки — список пар\n\n🎭 РП команды:\nрп команды — список РП действий\n\n🛡 VIP статус:\nстатусы — список VIP уровней\nмой статус — ваш текущий статус\n\n📊 Рейтинг:\nрейтинг / продать рейтинг\nтоп — топ игроков чата"
             kb = VkKeyboard(inline=True)
-            kb.add_callback_button("1️⃣ Основное", color=VkKeyboardColor.PRIMARY if cat == 'main' else VkKeyboardColor.SECONDARY, payload={"cmd": "help_cat", "cat": "main"})
-            kb.add_callback_button("2️⃣ Игры", color=VkKeyboardColor.PRIMARY if cat == 'games' else VkKeyboardColor.SECONDARY, payload={"cmd": "help_cat", "cat": "games"})
-            kb.add_callback_button("3️⃣ Развлечения", color=VkKeyboardColor.PRIMARY if cat == 'fun' else VkKeyboardColor.SECONDARY, payload={"cmd": "help_cat", "cat": "fun"})
+            kb.add_callback_button("1️⃣ Основное", color=VkKeyboardColor.PRIMARY if cat == 'main' else VkKeyboardColor.SECONDARY, payload={"cmd": "help_cat", "cat": "main", "owner": uid})
+            kb.add_callback_button("2️⃣ Игры", color=VkKeyboardColor.PRIMARY if cat == 'games' else VkKeyboardColor.SECONDARY, payload={"cmd": "help_cat", "cat": "games", "owner": uid})
+            kb.add_callback_button("3️⃣ Развлечения", color=VkKeyboardColor.PRIMARY if cat == 'fun' else VkKeyboardColor.SECONDARY, payload={"cmd": "help_cat", "cat": "fun", "owner": uid})
             answer("✅")
             try:
                 api.messages.edit(peer_id=peer_id, conversation_message_id=cmid, message=text, keyboard=kb.get_keyboard())
@@ -2786,10 +2784,14 @@ def handle_message_event(api, event):
                 logger.error(f"messages.edit error: {e}")
                 send(api, uid, text, peer_id, keyboard=kb)
         elif cmd == 'menu_tab':
+            owner = payload.get('owner')
+            if owner and int(owner) != int(uid):
+                answer("❌ Это меню не ваше")
+                return
             tab = payload.get('tab', 'property')
             user = get_user(uid)
             if tab == 'property':
-                prop_map = [("cars", CARS, "🚗 Машины"), ("phones", PHONES, "📱 Телефоны"), ("planes", PLANES, "✈ Самолёты"), ("yachts", YACHTS, "🛥 Яхты"), ("helicopters", HELICOPTERS, "🚁 Вертолёты"), ("houses", HOUSES, "🏠 Дома")]
+                prop_map = [("cars", CARS, "🚗 Машины"), ("phones", PHONES, "📱 Телефоны"), ("planes", PLANES, "✈ Самолеты"), ("yachts", YACHTS, "🛥 Яхты"), ("helicopters", HELICOPTERS, "🚁 Вертолеты"), ("houses", HOUSES, "🏠 Дома")]
                 lines = ["📦 Ваше имущество:\n"]
                 has_any = False
                 for col, catalog, label in prop_map:
@@ -2817,8 +2819,8 @@ def handle_message_event(api, event):
                     lines.append("😔 У вас нет бизнесов.")
                 text = "\n".join(lines)
             kb = VkKeyboard(inline=True)
-            kb.add_callback_button("📦 Имущество", color=VkKeyboardColor.PRIMARY if tab == 'property' else VkKeyboardColor.SECONDARY, payload={"cmd": "menu_tab", "tab": "property"})
-            kb.add_callback_button("🧳 Бизнесы", color=VkKeyboardColor.PRIMARY if tab == 'businesses' else VkKeyboardColor.SECONDARY, payload={"cmd": "menu_tab", "tab": "businesses"})
+            kb.add_callback_button("📦 Имущество", color=VkKeyboardColor.PRIMARY if tab == 'property' else VkKeyboardColor.SECONDARY, payload={"cmd": "menu_tab", "tab": "property", "owner": uid})
+            kb.add_callback_button("🧳 Бизнесы", color=VkKeyboardColor.PRIMARY if tab == 'businesses' else VkKeyboardColor.SECONDARY, payload={"cmd": "menu_tab", "tab": "businesses", "owner": uid})
             answer("✅")
             try:
                 api.messages.edit(peer_id=peer_id, conversation_message_id=cmid, message=text, keyboard=kb.get_keyboard())
@@ -2827,7 +2829,7 @@ def handle_message_event(api, event):
                 send(api, uid, text, peer_id, keyboard=kb)
         elif cmd == 'property':
             user = get_user(uid)
-            prop_map = [("cars", CARS, "🚗 Машины"), ("phones", PHONES, "📱 Телефоны"), ("planes", PLANES, "✈ Самолёты"), ("yachts", YACHTS, "🛥 Яхты"), ("helicopters", HELICOPTERS, "🚁 Вертолёты"), ("houses", HOUSES, "🏠 Дома")]
+            prop_map = [("cars", CARS, "🚗 Машины"), ("phones", PHONES, "📱 Телефоны"), ("planes", PLANES, "✈ Самолеты"), ("yachts", YACHTS, "🛥 Яхты"), ("helicopters", HELICOPTERS, "🚁 Вертолеты"), ("houses", HOUSES, "🏠 Дома")]
             text = "🏘 МОЁ ИМУЩЕСТВО\n━━━━━━━━━━━━━━━\n"
             has_any = False
             for col, catalog, label in prop_map:
@@ -2907,6 +2909,65 @@ def handle_message_event(api, event):
             except:
                 send(api, uid, "🎲 ПОЛЕ ЧУДЕС 🎲\n━━━━━━━━━━━━━━━\n\nВыберите категорию:", peer_id, keyboard=kb)
             return
+        elif cmd == 'mine_dig':
+            owner = payload.get('owner')
+            if owner and int(owner) != int(uid):
+                answer('❌ Это не ваша шахта')
+                return
+            user = get_user(uid)
+            vip_level = user.get('vip_level', 0) or 0
+            e = user['energy'] or 0
+            energy_cost = random.randint(1, 3)
+            if e < energy_cost:
+                answer(f'⚡ Мало энергии: {e}/{VIP_LEVELS[vip_level]["max_energy"]}')
+                return
+            luck = has_luck_boost(user)
+            mine_mult = VIP_LEVELS[vip_level]['mine_mult']
+            roll = random.randint(1, 100)
+            if luck: roll = max(roll, random.randint(1, 100))
+            if roll <= 5:
+                ore_name, ore_amount = 'алмаз', random.randint(1, 3)
+            elif roll <= 20:
+                ore_name, ore_amount = 'золото', random.randint(2, 8)
+            elif roll <= 50:
+                ore_name, ore_amount = 'железо', random.randint(5, 15)
+            else:
+                ore_name, ore_amount = 'уголь', random.randint(10, 30)
+            ore_amount = int(ore_amount * mine_mult)
+            ore_col = get_ore_col(ore_name)
+            db_inc(uid, **{ore_col: ore_amount})
+            db_set(uid, energy=e - energy_cost, last_mine=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+            update_experience(uid, 15, vip_level)
+            ore_emoji = ORE_TYPES[ore_name]['emoji']
+            answer(f'{ore_emoji} {ore_name.capitalize()}: +{ore_amount} ед. (⚡-{energy_cost})')
+            user2 = get_user(uid)
+            coal = get_user_ore(user2, 'уголь')
+            iron = get_user_ore(user2, 'железо')
+            gold_ore = get_user_ore(user2, 'золото')
+            diamond = get_user_ore(user2, 'алмаз')
+            e2 = user2['energy'] or 0
+            kb = VkKeyboard(inline=True)
+            kb.add_callback_button('⛏ Копать', color=VkKeyboardColor.POSITIVE, payload={'cmd': 'mine_dig', 'owner': uid})
+            kb.add_line()
+            kb.add_callback_button('📊 Курс руды', color=VkKeyboardColor.SECONDARY, payload={'cmd': 'mine_rate', 'owner': uid})
+            new_text = (f'⛏ ШАХТА\n━━━━━━━━━━━━━━━\n'
+                        f'⚡ Энергия: {e2}/{VIP_LEVELS[vip_level]["max_energy"]}\n\n'
+                        f'🪨 Уголь: {fmt_big(coal)} ед.\n⚙️ Железо: {fmt_big(iron)} ед.\n'
+                        f'🥇 Золото: {fmt_big(gold_ore)} ед.\n💎 Алмаз: {fmt_big(diamond)} ед.\n\n'
+                        f'💰 Продать: /продать [руда] [кол-во|всё]')
+            try:
+                api.messages.edit(peer_id=peer_id, conversation_message_id=cmid, message=new_text, keyboard=kb.get_keyboard())
+            except Exception as ex:
+                logger.error(f'mine_dig edit error: {ex}')
+        elif cmd == 'mine_rate':
+            text = '📊 КУРС РУДЫ\n━━━━━━━━━━━━━━━\n'
+            for name, data in ORE_TYPES.items():
+                text += f"{data['emoji']} {name.capitalize()}: {fmt_big(data['base_price'])}$ за ед.\n"
+            answer('📊 Курс руды')
+            try:
+                api.messages.edit(peer_id=peer_id, conversation_message_id=cmid, message=text, keyboard=None)
+            except:
+                send(api, uid, text, peer_id)
         elif cmd == 'wordle_end':
             if uid in WORDLE_GAME:
                 del WORDLE_GAME[uid]
@@ -2922,8 +2983,9 @@ def handle_message_event(api, event):
         logger.error(f"handle_message_event error: {e}")
 
 def main():
+    restore_db()  # восстановить БД ДО init_db
     init_db()
-    restore_db()  # Восстанавливаем БД из датасета
+    # Восстанавливаем БД из датасета
     logger.info("🚀 Запуск бота...")
     try:
         vk_session = VkApi(token=VK_TOKEN)
@@ -2953,3 +3015,6 @@ def main():
                 time.sleep(5)
     except Exception as e:
         logger.critical(f"Fatal error: {e}", exc_info=True)
+if __name__ == "__main__":
+    main()
+
