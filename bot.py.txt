@@ -2996,16 +2996,12 @@ def mafia_assign_roles(players_ids, names):
     mafia_count = max(1, n // 4)
     roles.append('don')
     roles.extend(['mafia'] * (mafia_count - 1))
-    if n >= 5:
-        roles.append('cop')
-    if n >= 6:
-        roles.append('doctor')
-    if n >= 7:
-        roles.append('mistress')
-    if n >= 8:
-        roles.append('bum')
-    if n >= 9:
-        roles.append('kamikaze')
+    # Все специальные роли перемешиваются случайно — каждая игра уникальная
+    # Оставляем минимум 1 мирного для баланса
+    special_pool = ['cop', 'doctor', 'mistress', 'bum', 'kamikaze']
+    random.shuffle(special_pool)
+    special_count = min(len(special_pool), n - mafia_count - 1)
+    roles.extend(special_pool[:special_count])
     while len(roles) < n:
         roles.append('civilian')
     random.shuffle(roles)
