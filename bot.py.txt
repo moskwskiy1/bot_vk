@@ -773,7 +773,20 @@ def handle_message(api, event):
         chat_id = peer_id - 2000000000
     has_payload = bool(msg.get('payload'))
     text_low = text.lower().strip()
-    
+
+    action = msg.get('action', {})
+    if action and action.get('type') == 'chat_invite_user' and chat_id:
+        invited_id = action.get('member_id') or action.get('email')
+        if invited_id and isinstance(invited_id, int) and invited_id > 0:
+            invited_user = get_user(invited_id)
+            if invited_user and invited_user['is_blocked']:
+                try:
+                    api.messages.removeChatUser(chat_id=chat_id, member_id=invited_id)
+                    send(api, uid, f"❌ Вы не можете добавить этого игрока, так как он заблокирован в боте.", peer_id)
+                except Exception as _e:
+                    logger.warning(f"Failed to kick banned user on invite: {_e}")
+        return
+
     if peer_id and peer_id != uid and not has_payload:
         pass
     
@@ -782,6 +795,8 @@ def handle_message(api, event):
         add_or_update_user(api, uid)
         user = get_user(uid)
     if user and user['is_blocked']:
+        if peer_id == uid:
+            send(api, uid, "Вы заблокированы в боте. Для разбана @scallypd", peer_id)
         return
     if user:
         check_exp_gain(uid)
@@ -2375,14 +2390,14 @@ def handle_message(api, event):
     if cmd in ["варн", "warn"]:
         if uid not in ADMIN_IDS:
             send(api, uid, "⛔ Нет прав.", peer_id); return
-        target_id = None; reason = "Без причины"
+        target_id = None; reason = None
         reply_msg = msg.get('reply_message')
         if reply_msg:
             target_id = reply_msg['from_id']
-            reason = ' '.join(parts[1:]) if len(parts) > 1 else "Без причины"
+            reason = ' '.join(parts[1:]) if len(parts) > 1 else None
         elif len(parts) > 1:
             target_id = resolve_user_id(api, parts[1])
-            reason = ' '.join(parts[2:]) if len(parts) > 2 else "Без причины"
+            reason = ' '.join(parts[2:]) if len(parts) > 2 else None
         if not target_id:
             send(api, uid, "Чтобы выдать пользователю предупреждение введите warn @VK причина (пример: warn @durov причина) аналогично с unwarn", peer_id); return
         if target_id == uid:
@@ -2519,14 +2534,14 @@ def handle_message(api, event):
     if cmd in ["блок", "ban"]:
         if uid not in ADMIN_IDS:
             send(api, uid, "⛔ Нет прав.", peer_id); return
-        target_id = None; reason = "Без причины"
+        target_id = None; reason = None
         reply_msg = msg.get('reply_message')
         if reply_msg:
             target_id = reply_msg['from_id']
-            reason = ' '.join(parts[1:]) if len(parts) > 1 else "Без причины"
+            reason = ' '.join(parts[1:]) if len(parts) > 1 else None
         elif len(parts) > 1:
             target_id = resolve_user_id(api, parts[1])
-            reason = ' '.join(parts[2:]) if len(parts) > 2 else "Без причины"
+            reason = ' '.join(parts[2:]) if len(parts) > 2 else None
         if not target_id:
             send(api, uid, "Чтобы заблокировать пользователя введите команду ban @VK причина (пример: ban @durov причина) аналогично с unban", peer_id); return
         if target_id == uid:
@@ -2545,7 +2560,8 @@ def handle_message(api, event):
         admin_mention = f"[{admin_link.replace('vk.com/', 'https://vk.com/')}|{admin_name}]"
         target_mention = f"[{target_link.replace('vk.com/', 'https://vk.com/')}|{target_name}]"
         log_mod_action("БАН", uid, admin_name, target_id, target_name, reason)
-        send(api, uid, f"⚡ Пользователь {admin_mention} заблокировал пользователя - {target_mention} навсегда по причине: \"{reason}\".", peer_id)
+        reason_part = f' по причине: "{reason}"' if reason else ""
+        send(api, uid, f"⚡ Пользователь {admin_mention} заблокировал пользователя - {target_mention} навсегда{reason_part}.", peer_id)
         return
     
     if cmd in ["разблок", "unban"]:
@@ -3017,4 +3033,5 @@ def main():
         logger.critical(f"Fatal error: {e}", exc_info=True)
 if __name__ == "__main__":
     main()
+
 
