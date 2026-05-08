@@ -2667,37 +2667,51 @@ def handle_message(api, event):
         send(api, uid, f"🔊 {target_user['username']} размучен.", peer_id)
         return
     
-    if cmd in ["блок", "ban"]:
+        # ========== БАН (ГЛОБАЛЬНЫЙ) ==========
+    if cmd == "бан":
         if uid not in ADMIN_IDS:
-            send(api, uid, "⛔ Нет прав.", peer_id); return
-        target_id = None; reason = None
+            send(api, uid, "⛔ У вас нет прав.", peer_id)
+            return
+        
+        target_id = None
+        reason = "Без причины"
+        
         reply_msg = msg.get('reply_message')
         if reply_msg:
             target_id = reply_msg['from_id']
-            reason = ' '.join(parts[1:]) if len(parts) > 1 else None
+            reason = ' '.join(parts[1:]) if len(parts) > 1 else "Без причины"
         elif len(parts) > 1:
             target_id = resolve_user_id(api, parts[1])
-            reason = ' '.join(parts[2:]) if len(parts) > 2 else None
+            reason = ' '.join(parts[2:]) if len(parts) > 2 else "Без причины"
+        
         if not target_id:
-            send(api, uid, "Чтобы заблокировать пользователя введите команду ban @VK причина (пример: ban @durov причина) аналогично с unban", peer_id); return
+            send(api, uid, "❓ Укажите пользователя (ответом или @username)", peer_id)
+            return
+        
         if target_id == uid:
-            send(api, uid, "😂 Нельзя забанить себя.", peer_id); return
-        target_user = get_user(target_id)
-        if not target_user:
-            add_or_update_user(api, target_id)
+            send(api, uid, "😂 Нельзя забанить себя.", peer_id)
+            return
+        
+        # Получаем кликабельную ссылку на админа
+        admin_name, _ = get_vk_link(api, uid)
+        admin_mention = f"[id{uid}|{admin_name}]"
+        
+        # Получаем кликабельную ссылку на цель
+        target_name, _ = get_vk_link(api, target_id)
+        target_mention = f"[id{target_id}|{target_name}]"
+        
+        user = get_user(target_id)
+        if not user:
+            send(api, uid, "❌ Пользователь не найден", peer_id)
+            return
+        
+        if user['is_blocked']:
+            send(api, uid, f"⚠️ Пользователь {target_mention} уже забанен", peer_id)
+            return
+        
         db_set(target_id, is_blocked=1)
-        if chat_id:
-            try:
-                api.messages.removeChatUser(chat_id=chat_id, member_id=target_id)
-            except Exception as _ke:
-                logger.warning(f"Kick on ban failed: {_ke}")
-        admin_name, admin_link = get_vk_link(api, uid)
-        target_name, target_link = get_vk_link(api, target_id)
-        admin_mention = f"[{admin_link.replace('vk.com/', 'https://vk.com/')}|{admin_name}]"
-        target_mention = f"[{target_link.replace('vk.com/', 'https://vk.com/')}|{target_name}]"
-        log_mod_action("БАН", uid, admin_name, target_id, target_name, reason)
-        reason_part = f' по причине: "{reason}"' if reason else ""
-        send(api, uid, f"⚡ Пользователь {admin_mention} заблокировал пользователя - {target_mention} навсегда{reason_part}.", peer_id)
+        
+        send(api, uid, f"🔨 БАН\n━━━━━━━━━━━━━━━\n👮 Администратор: {admin_mention}\n👤 Нарушитель: {target_mention}\n📋 Причина: {reason}", peer_id)
         return
     
     if cmd in ["разблок", "unban"]:
@@ -2714,7 +2728,7 @@ def handle_message(api, event):
             send(api, uid, "❌ Пользователь не найден.", peer_id); return
         db_set(target_id, is_blocked=0)
         target_name, target_link = get_vk_link(api, target_id)
-        send(api, uid, f"✅ Бан снят с {target_name} ({target_link}).", peer_id)
+        send(api, uid, f"✅ Администратор {target_name} ({target_link}).", peer_id)
         return
     
     # ==================== ЛОГИ МОДЕРАЦИИ ====================
